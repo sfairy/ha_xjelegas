@@ -15,7 +15,7 @@ DOMAIN = "xjelegas"  # 集成域，与燃气模块共用
 PACKAGE_NAME = "custom_components.xjelegas"  # 包路径，用于日志与存储
 
 # ---------- 版本信息 ----------
-VERSION = "1.3.1"  # 电力模块版本（与集成 manifest 同步）
+VERSION = "2.0.0"  # 电力模块版本（与集成 manifest 同步）
 VERSION_STORAGE = 1  # 存储结构版本，用于数据迁移兼容
 
 # ---------- 配置项键名 ----------
