@@ -1,0 +1,143 @@
+{
+  "title": "新疆电力燃气",
+  "config": {
+    "step": {
+      "user": {
+        "title": "选择接入类型",
+        "description": "请选择要接入的设备类型",
+        "data": {
+          "utility_type": "设备类型"
+        }
+      },
+      "gas": {
+        "title": "燃气账号登录",
+        "description": "请输入燃气账号信息",
+        "data": {
+          "phone": "手机号",
+          "password": "密码"
+        }
+      },
+      "ele": {
+        "title": "新疆电力 - 账号登录",
+        "data": {
+          "phone": "手机号",
+          "email": "备用邮箱（流控降级用）",
+          "password": "密码",
+          "ark_api_key": "LLM API Key",
+          "ark_base_url": "LLM Base URL",
+          "ark_model": "LLM 模型"
+        }
+      }
+    },
+    "error": {
+      "missing_fields": "请填写手机号和密码",
+      "invalid_auth": "账号或密码错误，或验证码识别失败",
+      "cannot_connect": "无法连接到服务器",
+      "missing_llm_key": "请配置 LLM API Key（用于验证码识别）",
+      "invalid_email": "请输入有效的邮箱地址",
+      "invalid_phone": "请输入有效的手机号码",
+      "invalid_refresh_interval": "刷新间隔须为 12-48 之间的整数（小时）",
+      "rk001_rate_limit": "密码登录日额度已用完(RK001)，请配置备用邮箱或等待明日重试"
+    },
+    "abort": {
+      "client_not_found": "集成未正确加载，请尝试重新加载或重启 Home Assistant。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "login_settings": "登录与验证码设置",
+          "debug": "调试设置",
+          "billing_config": "统一电价设置",
+          "pricing": "计费模式",
+          "gas_debug": "调试设置"
+        }
+      },
+      "login_settings": {
+        "title": "新疆电力 - 选项",
+        "data": {
+          "ark_api_key": "LLM API Key（留空不修改）",
+          "ark_base_url": "LLM Base URL",
+          "ark_model": "LLM 模型",
+          "email_account": "备用邮箱（流控降级用）",
+          "refresh_interval": "刷新间隔（小时，12-48）",
+          "new_password": "新密码（留空不修改；填写后会触发一次登录验证）"
+        }
+      },
+      "debug": {
+        "title": "调试设置",
+        "description": "开启调试模式后，将在日志中输出 API 请求等信息，便于排查问题。",
+        "data": {
+          "is_debug": "调试模式"
+        },
+        "data_description": {
+          "is_debug": "打开调试开关后，将会打印所有请求日志。可在[配置]-[系统]-[日志]中查看。"
+        }
+      },
+      "select_consumer": {
+        "title": "选择户号",
+        "description": "请选择要使用的新疆电力户号",
+        "data": {
+          "consumer_number": "户号"
+        }
+      },
+      "billing_config": {
+        "title": "{standard}配置",
+        "description": "请配置{standard}的详细参数",
+        "data": {
+          "average_price": "统一单价",
+          "is_prepaid": "预付费类型"
+        }
+      },
+      "gas_debug": {
+        "title": "燃气调试设置",
+        "description": "开启调试模式后，将在日志中输出 API 数据更新等信息，便于排查问题。",
+        "data": {
+          "is_debug": "调试模式"
+        },
+        "data_description": {
+          "is_debug": "打开调试开关后，将会打印所有请求日志。可在[配置]-[系统]-[日志]中查看。"
+        }
+      },
+      "mode": {
+        "title": "计费模式",
+        "description": "选择计费模式",
+        "data": {
+          "pricing_mode": "计费模式"
+        }
+      },
+      "fixed": {
+        "title": "固定单价",
+        "description": "配置固定单价（单位：元/m³）",
+        "data": {
+          "fixed_price": "固定单价"
+        }
+      },
+      "tiered": {
+        "title": "阶梯计价",
+        "description": "配置阶梯价格（单位：元/m³）",
+        "data": {
+          "tier_1_limit": "一阶梯气量上限",
+          "tier_1_price": "一阶梯单价",
+          "tier_2_limit": "二阶梯气量上限",
+          "tier_2_price": "二阶梯单价",
+          "tier_3_price": "三阶梯单价"
+        }
+      }
+    },
+    "abort": {
+      "client_not_found": "集成未正确加载，请尝试重新加载或重启 Home Assistant。",
+      "unknown_error": "配置过程中发生未知错误，请稍后重试。"
+    },
+    "error": {
+      "invalid_auth": "账号或密码错误，或验证码识别失败",
+      "cannot_connect": "无法连接到服务器",
+      "invalid_email": "请输入有效的邮箱地址",
+      "invalid_refresh_interval": "刷新间隔须为 12-48 之间的整数（小时）",
+      "rk001_rate_limit": "密码登录日额度已用完(RK001)，请配置备用邮箱或等待明日重试",
+      "no_account": "未找到运行中的集成实例或账号信息，请重试或重启 Home Assistant",
+      "rk001_cooldown_cannot_verify": "当前处于 RK001 流控冷却期，无法验证新密码，请明日0点后重试"
+    }
+  }
+}

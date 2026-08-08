@@ -1,0 +1,23 @@
+{
+  "domain": "xjelegas",
+  "name": "新疆电力燃气",
+  "version": "1.3.1",
+  "documentation": "https://github.com/sfairy/ha_xjelegas",
+  "issue_tracker": "https://github.com/sfairy/ha_xjelegas/issues",
+  "codeowners": [
+    "@sfairy"
+  ],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "requirements": [
+    "requests>=2.25.1",
+    "pycryptodome>=3.10.1",
+    "Pillow",
+    "openai>=1.0.0"
+  ],
+  "dependencies": [
+    "frontend",
+    "http"
+  ]
+}

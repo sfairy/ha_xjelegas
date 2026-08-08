@@ -1,0 +1,98 @@
+{
+  "title": "Xinjiang Electricity & Gas",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select type",
+        "description": "Choose the utility type to connect",
+        "data": {
+          "utility_type": "Type"
+        }
+      },
+      "gas": {
+        "title": "Gas login",
+        "description": "Enter your gas account credentials",
+        "data": {
+          "phone": "Phone",
+          "password": "Password"
+        }
+      },
+      "ele": {
+        "title": "Xinjiang Electricity - Account Login",
+        "data": {
+          "phone": "Phone number",
+          "email": "Backup email (rate limit fallback)",
+          "password": "Password",
+          "ark_api_key": "LLM API Key",
+          "ark_base_url": "LLM Base URL",
+          "ark_model": "LLM Model"
+        }
+      }
+    },
+    "error": {
+      "missing_fields": "Please fill in phone number and password",
+      "invalid_auth": "Invalid account/password or captcha recognition failed",
+      "cannot_connect": "Cannot connect to server",
+      "missing_llm_key": "Please configure LLM API Key for captcha recognition",
+      "invalid_email": "Please enter a valid email address",
+      "invalid_phone": "Please enter a valid phone number",
+      "invalid_refresh_interval": "Refresh interval must be an integer between 12 and 48 (hours)",
+      "rk001_rate_limit": "Daily login quota exceeded (RK001). Configure backup email or retry tomorrow"
+    },
+    "abort": {
+      "client_not_found": "Integration not loaded correctly. Please try reloading or restarting Home Assistant."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "login_settings": "Login & captcha settings",
+          "debug": "Debug",
+          "billing_config": "Billing",
+          "pricing": "Billing mode",
+          "gas_debug": "Debug"
+        }
+      },
+      "login_settings": {
+        "title": "Xinjiang Electricity - Options",
+        "data": {
+          "ark_api_key": "LLM API Key (leave blank to keep)",
+          "ark_base_url": "LLM Base URL",
+          "ark_model": "LLM Model",
+          "email_account": "Backup email (rate limit fallback)",
+          "refresh_interval": "Refresh interval (hours, 12-48)",
+          "new_password": "New password (leave blank to keep; triggers login verification)"
+        }
+      },
+      "debug": {
+        "title": "Debug",
+        "description": "When enabled, API request logs will be printed for troubleshooting.",
+        "data": {
+          "is_debug": "Debug mode"
+        }
+      },
+      "billing_config": {
+        "title": "{standard} configuration",
+        "description": "Configure {standard} parameters",
+        "data": {
+          "average_price": "Unified price",
+          "is_prepaid": "Prepaid type"
+        }
+      }
+    },
+    "abort": {
+      "client_not_found": "Integration not loaded correctly.",
+      "unknown_error": "An error occurred. Please try again later."
+    },
+    "error": {
+      "invalid_auth": "Invalid account/password or captcha recognition failed",
+      "cannot_connect": "Cannot connect to server",
+      "invalid_email": "Please enter a valid email address",
+      "invalid_refresh_interval": "Refresh interval must be an integer between 12 and 48 (hours)",
+      "rk001_rate_limit": "Daily login quota exceeded (RK001). Configure backup email or retry tomorrow",
+      "no_account": "No running integration instance or account found. Please retry or restart Home Assistant",
+      "rk001_cooldown_cannot_verify": "RK001 rate-limit cooldown active; cannot verify new password until after midnight"
+    }
+  }
+}
