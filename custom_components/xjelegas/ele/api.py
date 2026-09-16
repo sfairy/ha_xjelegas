@@ -1243,9 +1243,12 @@ class StateGridDataClient:
         if self.is_debug:
             LOGGER.info("余额API完整响应(户号 %s): %s", door_account.get('consNo_dst', ''), json_dumps(response))
         
-        if 'code' not in response or response['code'] != 1 or 'data' not in response or not response['data']:
+        if not isinstance(response, dict) or 'code' not in response or response['code'] != 1 or 'data' not in response or not response['data']:
             if self.is_debug:
-                LOGGER.warning("余额API解析失败: code=%s, data存在=%s", response.get('code'), bool(response.get('data')))
+                if isinstance(response, dict):
+                    LOGGER.warning("余额API解析失败: code=%s, data存在=%s", response.get('code'), bool(response.get('data')))
+                else:
+                    LOGGER.warning("余额API返回非dict: %s", type(response).__name__)
             return False
         response_data = response['data']
         balance_list = response_data.get('list')
