@@ -32,6 +32,9 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
+# 与集成共用默认配置（如默认大模型），避免调试脚本与集成出现不一致
+from ele.const import DEFAULT_ARK_MODEL
+
 # 尝试导入 Home Assistant 的日期工具，若未安装则使用本地 datetime 替代
 try:
     from homeassistant.util import dt as dt_util
@@ -1228,7 +1231,7 @@ async def debug_electricity(args) -> None:
     # 获取 LLM 配置（验证码识别）
     ark_api_key = getattr(args, "ark_api_key", None) or os.getenv("ARK_API_KEY", "").strip()
     ark_base_url = getattr(args, "ark_base_url", None) or os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3").strip()
-    ark_model = getattr(args, "ark_model", None) or os.getenv("ARK_MODEL", "doubao-vision-pro-32k").strip()
+    ark_model = getattr(args, "ark_model", None) or os.getenv("ARK_MODEL", DEFAULT_ARK_MODEL).strip()
 
     if not ark_api_key:
         print("警告: 未配置 LLM API Key，验证码识别可能失败。可通过 --ark-api-key 或环境变量 ARK_API_KEY 设置。")

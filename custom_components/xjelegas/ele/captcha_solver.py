@@ -50,7 +50,7 @@ def get_llm_client():
 
 def get_llm_model() -> str:
     """获取当前配置的模型名称。"""
-    return _LLM_CONFIG.get("model", "doubao-seed-2-0-pro-260215")
+    return _LLM_CONFIG.get("model", "doubao-seed-2-1-pro-260915")
 
 
 def base64_to_bytes(base64_data: str) -> bytes:
@@ -260,7 +260,7 @@ class CaptchaSolver:
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, base_url: Optional[str] = None):
         self.api_key = (api_key or os.getenv('ARK_API_KEY', '')).strip()
-        self.model = model or "doubao-seed-2-0-pro-260215"
+        self.model = model or "doubao-seed-2-1-pro-260915"
         self.base_url = base_url or "https://ark.cn-beijing.volces.com/api/v3"
         if self.api_key:
             configure_llm(self.api_key, self.base_url, self.model)

@@ -178,8 +178,14 @@ configuration = {
 # API 凭证与路径
 # 国网开放平台分配的 appKey/appSecret，用于握手与签名
 # 优先从环境变量读取，避免凭证硬编码泄露；未设置时使用默认值（仅开发/测试用途）
-appKey = os.environ.get('XJELEGAS_APP_KEY', '7e5b5e84ddad4994b0ebc68dedca4962')
-appSecret = os.environ.get('XJELEGAS_APP_SECRET', '2bc37a881e1541aaa6e6e174658d150b')
+appKey = os.environ.get('XJELEGAS_APP_KEY', '0329843199564c55809c77959792b558')
+appSecret = os.environ.get('XJELEGAS_APP_SECRET', '4c1974786ee54d3bb4fb82c1ec5cd1a8')
+# 握手阶段（c02/f02）使用的客户端公钥；服务端会在该响应中下发新的 publicKey
+# 供后续所有请求加密 skey 使用（见 self.publicKey）
+handshakePublicKey = os.environ.get(
+    'XJELEGAS_HANDSHAKE_PUBLIC_KEY',
+    '04461932EDC916BFEF2EA324056296214E8281FDF9F962C82E28D59C7B98BB5ED479801B8AB8F86E933B73A136A431D40E0FF769A7209E63E67C8B9326F277A058',
+)
 baseApi = 'https://www.95598.cn/api'
 
 # 请求超时（秒），与 state_grid 一致，避免连接挂起
@@ -437,6 +443,7 @@ class StateGridDataClient:
         self.dataVersion = None
         self.keyCode = None
         self.publicKey = None
+        self.uuid = None  # 会话级 SM4 密钥：新版协议由客户端生成并随 uuid 请求头上报
         self.need_login = False
         self.phone = None
         self.codeKey = None
@@ -480,6 +487,7 @@ class StateGridDataClient:
             try:
                 self.keyCode = config.get('keyCode')
                 self.publicKey = config.get('publicKey')
+                self.uuid = config.get('uuid')
                 self.accessToken = config.get('accessToken')
                 self.refreshToken = config.get('refreshToken')
                 self.token = config.get('token')
@@ -510,6 +518,7 @@ class StateGridDataClient:
         data = {}
         data['keyCode'] = self.keyCode
         data['publicKey'] = self.publicKey
+        data['uuid'] = self.uuid
         data['accessToken'] = self.accessToken
         data['refreshToken'] = self.refreshToken
         data['token'] = self.token
@@ -582,17 +591,17 @@ class StateGridDataClient:
         加密包装后的数据（国网请求体标准格式）.
         
         流程：
-        1. 使用 SM4 对称加密 JSON 数据
+        1. 使用 SM4 对称加密 JSON 数据（密钥为会话 uuid）
         2. 生成 SM3 签名：encrypted_data + timestamp 的哈希，追加到密文后
-        3. 使用 SM2 公钥加密 keyCode 得到 skey，供服务端解密
+        3. 使用 SM2 公钥加密 uuid 得到 skey，供服务端解密
         
         Returns:
             dict: {'data': 密文+签名, 'skey': 加密后的密钥, 'timestamp': 时间戳}
         """
-        encrypted_data = sm4_encrypt(json_dumps(data), self.keyCode)
+        encrypted_data = sm4_encrypt(json_dumps(data), self.uuid)
         return {
             'data': encrypted_data + sm3_hash(encrypted_data + str(self.timestamp)),
-            'skey': sm2_encrypt(self.keyCode, self.publicKey),
+            'skey': sm2_encrypt(self.uuid, self.publicKey),
             'timestamp': str(self.timestamp)
         }
 
@@ -757,6 +766,20 @@ class StateGridDataClient:
         return False
 
     @staticmethod
+    def _error_result(response, msg):
+        """
+        构造错误结果，并保留服务端原始 code。
+
+        _is_rk001_error 依赖 code 字段识别流控（11401=RK001）。若这里丢掉 code，
+        登录失败会被误判为普通错误而反复重试，白白消耗当日登录额度。
+        """
+        code = response.get('code') if isinstance(response, dict) else None
+        result = {'errcode': 1, 'errmsg': msg}
+        if code is not None:
+            result['code'] = code
+        return result
+
+    @staticmethod
     def _looks_like_rk001_message(result):
         """配置流程用：结合 code 与 errmsg 判断 RK001。"""
         if StateGridDataClient._is_rk001_error(result):
@@ -829,9 +852,12 @@ class StateGridDataClient:
         self.timestamp = int(time.time() * 1000)
         timestamp_str = str(self.timestamp)
         
-        if self.keyCode is None:
-            self.keyCode = generate_random_string(32, 16, 2)
+        # 会话级 SM4 密钥：新版协议由客户端生成 32 位 uuid，并随 uuid 请求头上报。
+        # 服务端在握手响应中下发的 keyCode 仅用于部分接口的 keyCode 请求头。
+        if self.uuid is None:
+            self.uuid = generate_random_string(32, 16, 2)
         
+        uuid_key = self.uuid
         key_code = self.keyCode
         
         # 添加反爬虫请求头
@@ -843,6 +869,7 @@ class StateGridDataClient:
             'timestamp': timestamp_str,
             'wsgwType': 'web',
             'appKey': appKey,
+            'uuid': uuid_key,
             'User-Agent': random.choice(USER_AGENTS),  # 随机 User-Agent
             'Referer': REFERER,
             'Origin': ORIGIN,
@@ -853,12 +880,12 @@ class StateGridDataClient:
         
         request_data = data
         if api == get_request_key_api:
-            # 握手请求：加密 client_id 和 secret
+            # 握手请求：SM4 密钥为 uuid，skey 使用客户端公钥加密 uuid
             request_data = {CLIENT_ID_KEY: appKey, CLIENT_SECRET_KEY: appSecret}
-            encrypted_req = sm4_encrypt(json_dumps(request_data), key_code)
+            encrypted_req = sm4_encrypt(json_dumps(request_data), uuid_key)
             request_data = {
                 'data': encrypted_req + sm3_hash(encrypted_req + timestamp_str),
-                'skey': sm2_encrypt(key_code, '042D12DFBC179202AC4B7B7BADCDA6FF7B604339263F6AB732CE7107B7EA3830A2CA714DC303920D3CFF7647D898F1A8CC6C24E9EC3CC194E22D984AF7E16B42DC'),
+                'skey': sm2_encrypt(uuid_key, handshakePublicKey),
                 CLIENT_ID_KEY: appKey,
                 'timestamp': timestamp_str
             }
@@ -893,10 +920,10 @@ class StateGridDataClient:
                 'timestamp': self.timestamp,
                 'code': request_data['code']
             }
-            encrypted_req = sm4_encrypt(json_dumps(request_data), key_code)
+            encrypted_req = sm4_encrypt(json_dumps(request_data), uuid_key)
             request_data = {
                 'data': encrypted_req + sm3_hash(encrypted_req + timestamp_str),
-                'skey': sm2_encrypt(key_code, self.publicKey),
+                'skey': sm2_encrypt(uuid_key, self.publicKey),
                 'timestamp': timestamp_str
             }
         else:
@@ -932,7 +959,7 @@ class StateGridDataClient:
                         response_json = json.loads(response_text)
                         # 如果响应包含 encryptData，则进行解密
                         if ENCRYPT_DATA_KEY in response_json:
-                            decrypted_data = sm4_decrypt(response_json[ENCRYPT_DATA_KEY], key_code)
+                            decrypted_data = sm4_decrypt(response_json[ENCRYPT_DATA_KEY], uuid_key)
                             response_json = json.loads(decrypted_data)
                     # 请求成功后添加随机延迟，避免被识别为爬虫
                     # 登录相关接口使用短延迟（200-500ms），业务数据接口使用正常延迟（1-3秒）
@@ -972,7 +999,7 @@ class StateGridDataClient:
             self.timestamp = int(time.time() * 1000)
             return {'errcode': 0}
         LOGGER.error('get_request_key_api-' + msg)
-        return {'errcode': 1, 'errmsg': msg}
+        return self._error_result(response, msg)
 
     async def _get_pass_verify_code(self, account, password):
         """获取验证码（登录 Step 2），自动检测滑块/点选类型。"""
@@ -1009,7 +1036,7 @@ class StateGridDataClient:
                 'ticket': self.ticket,
             }
         LOGGER.error('get_verify_code_api-' + msg)
-        return {'errcode': 1, 'errmsg': msg}
+        return self._error_result(response, msg)
 
     async def _verify_password(self, account, password, code, loginKey, captcha_type='slider'):
         """提交密码和验证码（登录 Step 3）。"""
@@ -1062,7 +1089,7 @@ class StateGridDataClient:
                     return {'errcode': 0}
 
         LOGGER.error('verify_password_api-' + msg)
-        return {'errcode': 1, 'errmsg': msg}
+        return self._error_result(response, msg)
 
     async def _verify_click_captcha(self, account, password, code, loginKey):
         """提交点选验证码（f07/clickCard 端点）。"""
@@ -1106,7 +1133,7 @@ class StateGridDataClient:
                     self.timestamp = int(time.time() * 1000)
                     return {'errcode': 0}
         LOGGER.warning("clickCard(f07) 验证失败: %s，尝试回退到 f06...", msg)
-        return {'errcode': 1, 'errmsg': msg}
+        return self._error_result(response, msg)
 
     async def _get_request_authorize(self):
         """
@@ -1617,6 +1644,7 @@ class StateGridDataClient:
                 )
             if result_verify['errcode'] != 0:
                 if self._is_rk001_error(result_verify):
+                    self._set_rk001_cooldown()
                     return {'errcode': 1, 'errmsg': '验证登录遇流控(RK001)'}
                 if max_retry <= 0:
                     return result_verify
@@ -1651,6 +1679,7 @@ class StateGridDataClient:
             )
             if result_verify['errcode'] != 0:
                 if self._is_rk001_error(result_verify):
+                    self._set_rk001_cooldown()
                     return {'errcode': 1, 'errmsg': '验证登录遇流控(RK001)'}
                 if max_retry <= 0:
                     return result_verify

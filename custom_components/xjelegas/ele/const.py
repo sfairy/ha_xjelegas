@@ -47,7 +47,7 @@ RETENTION_MONTHS = 24  # 月数据保留月数（24 个月）
 ARK_API_KEY_ENV = "ARK_API_KEY"  # 火山引擎 API Key 环境变量名
 CONF_ARK_MODEL = "ark_model"  # 大模型名称
 CONF_ARK_BASE_URL = "ark_base_url"  # 大模型 API 接入地址
-DEFAULT_ARK_MODEL = "doubao-seed-2-0-pro-260215"
+DEFAULT_ARK_MODEL = "doubao-seed-2-1-pro-260915"
 DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 
