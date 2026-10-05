@@ -585,6 +585,9 @@ class XjGasCoordinator(DataUpdateCoordinator):
         此方法由协调器定期调用。它会并行或顺序调用多个 API 接口，
         并将结果汇总到一个字典中返回。
         """
+        # 每次刷新前按当前时间重算更新间隔，实现昼夜降频。
+        # 原实现只在 __init__ 计算一次，启动时段决定后永不切换（夜间仍按 30 分钟轮询）。
+        self.update_interval = self._get_smart_update_interval()
         try:
             # 首次更新前加载本地缓存，重启后立即恢复历史数据
             await self._storage.async_load_initial()

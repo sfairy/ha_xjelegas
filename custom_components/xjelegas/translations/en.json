@@ -19,33 +19,40 @@
         "title": "Xinjiang Electricity - Account Login",
         "data": {
           "phone": "Phone number",
-          "email": "Backup email (rate limit fallback)",
-          "password": "Password",
-          "ark_api_key": "LLM API Key",
-          "ark_base_url": "LLM Base URL",
-          "ark_model": "LLM Model"
+          "password": "Password"
+        }
+      },
+      "ele_verify": {
+        "title": "New device verification",
+        "description": "State Grid needs to verify this new device. Enter the 6-digit code sent to the phone ending in {phone_suffix}.",
+        "data": {
+          "verification_code": "SMS verification code"
         }
       }
     },
     "error": {
       "missing_fields": "Please fill in account and password",
-      "invalid_auth": "Invalid account/password or captcha recognition failed",
+      "invalid_auth": "Invalid account/password",
       "cannot_connect": "Cannot connect to server",
-      "missing_llm_key": "Please configure LLM API Key for captcha recognition",
-      "invalid_email": "Please enter a valid email address",
+      "app_login_failed": "Login failed on the State Grid App channel. Please retry later",
       "invalid_phone": "Please enter a valid phone number",
       "invalid_refresh_interval": "Refresh interval must be an integer between 12 and 48 (hours)",
-      "rk001_rate_limit": "Daily login quota exceeded (RK001). Configure backup email or retry tomorrow"
+      "rk001_rate_limit": "State Grid rate limit (RK001) hit. Please retry later",
+      "device_verification": "State Grid requires new-device verification; a code is being sent",
+      "cannot_send_verification_code": "Could not send the verification SMS. Please retry later",
+      "invalid_verification_code": "Invalid or expired verification code",
+      "interactive_challenge_unsupported": "State Grid requires an interactive check (RK008) that must be completed in the official 网上国网 App first"
     },
     "abort": {
-      "client_not_found": "Integration not loaded correctly. Please try reloading or restarting Home Assistant."
+      "client_not_found": "Integration not loaded correctly. Please try reloading or restarting Home Assistant.",
+      "verification_expired": "The device verification session expired. Please add the integration again."
     }
   },
   "options": {
     "step": {
       "init": {
         "menu_options": {
-          "login_settings": "Login & captcha settings",
+          "login_settings": "Login & refresh settings",
           "debug": "Debug",
           "billing_config": "Billing",
           "pricing": "Billing mode",
@@ -55,12 +62,8 @@
       "login_settings": {
         "title": "Xinjiang Electricity - Options",
         "data": {
-          "ark_api_key": "LLM API Key (leave blank to keep)",
-          "ark_base_url": "LLM Base URL",
-          "ark_model": "LLM Model",
-          "email_account": "Backup email (rate limit fallback)",
           "refresh_interval": "Refresh interval (hours, 12-48)",
-          "new_password": "New password (leave blank to keep; triggers login verification)"
+          "new_password": "New password (leave blank to keep; triggers App login verification)"
         }
       },
       "debug": {
@@ -127,13 +130,16 @@
       "unknown_error": "An error occurred. Please try again later."
     },
     "error": {
-      "invalid_auth": "Invalid account/password or captcha recognition failed",
+      "invalid_auth": "Invalid account/password",
       "cannot_connect": "Cannot connect to server",
-      "invalid_email": "Please enter a valid email address",
+      "app_login_failed": "Login failed on the State Grid App channel. Please retry later",
+      "device_verification": "State Grid requires new-device verification; a code is being sent",
+      "cannot_send_verification_code": "Could not send the verification SMS. Please retry later",
+      "invalid_verification_code": "Invalid or expired verification code",
+      "interactive_challenge_unsupported": "State Grid requires an interactive check (RK008) that must be completed in the official 网上国网 App first",
       "invalid_refresh_interval": "Refresh interval must be an integer between 12 and 48 (hours)",
-      "rk001_rate_limit": "Daily login quota exceeded (RK001). Configure backup email or retry tomorrow",
-      "no_account": "No running integration instance or account found. Please retry or restart Home Assistant",
-      "rk001_cooldown_cannot_verify": "RK001 rate-limit cooldown active; cannot verify new password until after midnight"
+      "rk001_rate_limit": "State Grid rate limit (RK001) hit. Please retry later",
+      "no_account": "No running integration instance or account found. Please retry or restart Home Assistant"
     }
   }
 }

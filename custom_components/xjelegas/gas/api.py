@@ -100,6 +100,7 @@ class XjGasAPI:
         self._cons_no = None         # 用户户号 (Contract Number)，查询账单/用气量必需
         self._login_failed_at: Optional[float] = None  # 上次登录失败时间戳，用于 60 秒冷却防频繁请求
         self._request_lock = asyncio.Lock()  # 异步锁，保证并发请求安全
+        self._login_lock = asyncio.Lock()    # 独立的登录锁：login() 与业务请求互不等待，避免死锁
         self._verify_ssl = True      # SSL 证书验证，默认启用；若服务器使用自签名证书可设为 False
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -265,7 +266,10 @@ class XjGasAPI:
         Returns:
             bool: 登录是否成功。
         """
-        async with self._request_lock:
+        async with self._login_lock:
+            # 已有 Token 时直接返回，避免并发调用（如 5 个 gather 协程同时发现无 Token）重复登录
+            if self._token:
+                return True
             # 登录失败后 60 秒内不重复尝试，避免触发风控
             if self._login_failed_at and time.monotonic() - self._login_failed_at < 60:
                 if self._is_debug:
@@ -422,8 +426,11 @@ class XjGasAPI:
         功能：
         1. 自动检查 Token，如果不存在则自动登录。
         2. 自动处理请求加密和响应解密。
-        3. 处理 Token 过期的情况（自动重试）。
-        4. 对网络异常进行一次重试，降低短时抖动影响。
+        3. 处理 Token 过期的情况（重新登录后重试一次）。
+
+        说明：本方法不再全程持有 asyncio.Lock。旧实现在持锁期间调用 login() 或递归调用
+        自身，而二者都要获取同一把不可重入锁，会直接死锁并挂起到 60 秒超时；现改为
+        「单次请求内部持锁，登录与重试在锁外进行」。
 
         Args:
             path (str): API 路径 (如 '/micro/bill/arrearage')。
@@ -433,58 +440,76 @@ class XjGasAPI:
         Returns:
             dict: 解密后的响应数据，如果失败则返回 None。
         """
-        async with self._request_lock:
-            # 验证输入参数
-            if not path or not isinstance(path, str):
-                _LOGGER.error("请求失败：无效的路径参数: %s", path)
+        # 验证输入参数
+        if not path or not isinstance(path, str):
+            _LOGGER.error("请求失败：无效的路径参数: %s", path)
+            return None
+
+        if not isinstance(payload, dict):
+            _LOGGER.error("请求失败：无效的载荷参数类型: %s", type(payload).__name__)
+            return None
+
+        # 如果没有 Token，先尝试登录
+        if not self._token:
+            if not await self.login():
                 return None
 
-            if not isinstance(payload, dict):
-                _LOGGER.error("请求失败：无效的载荷参数类型: %s", type(payload).__name__)
+        # 确保握手状态有效
+        if not await self._handshake():
+            return None
+
+        attempts = 2 if retry else 1
+        for attempt in range(attempts):
+            result, retryable = await self._send_authenticated_once(path, payload)
+            if result is not None:
+                return result
+            if not retryable or attempt >= attempts - 1:
+                break
+            # Token 过期/会话失效/网络抖动：清除 Token，重新登录后重试一次
+            self._token = None
+            if not await self.login():
                 return None
 
-            # 如果没有 Token，先尝试登录
-            if not self._token:
-                if not await self.login():
-                    return None
+        if retry:
+            _LOGGER.warning("请求失败(重试后仍失败): 路径: %s", path)
+        return None
 
-            # 确保握手状态有效
-            if not await self._handshake():
-                return None
+    async def _send_authenticated_once(self, path: str, payload: Dict[str, Any]) -> tuple:
+        """
+        执行一次认证业务请求（仅本方法持有 _request_lock）。
 
-            # 加密请求载荷
-            encrypted_payload = await self._encrypt_payload(payload)
-            if not encrypted_payload:
-                _LOGGER.error("请求失败：载荷加密失败")
-                return None
+        Returns:
+            (result, retryable): result 为解密后的数据/原始响应，失败时为 None；
+            retryable 表示该失败是否可通过重新登录后重试。
+        """
+        # 加密请求载荷
+        encrypted_payload = await self._encrypt_payload(payload)
+        if not encrypted_payload:
+            _LOGGER.error("请求失败：载荷加密失败")
+            return None, False
 
-            url = f'{self._api_base}{path}'
-            headers = self._build_headers({
-                'secret': self._crypto.secret or '',
-                'busyToken': self._busy_token or '',
-                'token': self._token,
-                'openId': self._openid or ''
-            })
+        url = f'{self._api_base}{path}'
+        headers = self._build_headers({
+            'secret': self._crypto.secret or '',
+            'busyToken': self._busy_token or '',
+            'token': self._token,
+            'openId': self._openid or ''
+        })
 
-            try:
+        try:
+            async with self._request_lock:
                 session = await self._get_session()
                 async with session.post(url, json=encrypted_payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
-
                     if response.status != 200:
-                        # 非 200 可能是 Token 过期或会话失效，清除 Token 后重新登录并重试一次；重试前不记录
-                        if retry:
-                            self._token = None
-                            if await self.login():
-                                return await self._authenticated_request(path, payload, retry=False)
-                        _LOGGER.warning("请求失败(重试后仍失败)，HTTP状态码: %d, 路径: %s", response.status, path)
-                        return None
+                        # 非 200 可能是 Token 过期或会话失效，交由上层重新登录后重试
+                        return None, True
 
                     # 解析JSON响应
                     try:
                         response_json = await response.json()
                     except json.JSONDecodeError as json_ex:
                         _LOGGER.error("请求响应JSON解析失败: %s, 路径: %s, 响应内容: %s", json_ex, path, await response.text())
-                        return None
+                        return None, False
 
                     # 判断是否为加密响应（标准格式包含 data 和 key 字段）
                     if 'data' in response_json and 'key' in response_json:
@@ -492,40 +517,20 @@ class XjGasAPI:
                         if decrypted:
                             if self._is_debug:
                                 _LOGGER.info("API 响应解密成功 [%s]: %s", path, decrypted)
-                            return decrypted
-                        else:
-                            # 解密失败可能因 Token 过期或会话被踢，尝试重新登录；重试前不记录
-                            if retry:
-                                self._token = None  # 清除 Token，强制重新登录
-                                if await self.login():
-                                    return await self._authenticated_request(path, payload, retry=False)
-                            _LOGGER.warning("响应解密失败(重试后仍失败)，路径: %s", path)
-                            return None
+                            return decrypted, False
+                        # 解密失败可能因 Token 过期或会话被踢，交由上层重登后重试
+                        return None, True
 
-                    return response_json
-            # ---------- 网络异常：尝试重新登录并重试一次 ----------
-            except asyncio.TimeoutError:
-                # 重试前不记录，只有重试后仍失败才记录
-                if retry:
-                    self._token = None
-                    if await self.login():
-                        return await self._authenticated_request(path, payload, retry=False)
-                _LOGGER.warning("请求超时(重试后仍失败): 路径: %s", path)
-                return None
-            except aiohttp.ClientError as client_ex:
-                if retry:
-                    self._token = None
-                    if await self.login():
-                        return await self._authenticated_request(path, payload, retry=False)
-                _LOGGER.warning("网络连接错误(重试后仍失败): %s, 路径: %s", client_ex, path)
-                return None
-            except Exception as e:
-                if retry:
-                    self._token = None
-                    if await self.login():
-                        return await self._authenticated_request(path, payload, retry=False)
-                _LOGGER.warning("请求发生未知异常(重试后仍失败): %s (类型: %s), 路径: %s", e, type(e).__name__, path)
-                return None
+                    return response_json, False
+        except asyncio.TimeoutError:
+            _LOGGER.warning("请求超时: 路径: %s", path)
+            return None, True
+        except aiohttp.ClientError as client_ex:
+            _LOGGER.warning("网络连接错误: %s, 路径: %s", client_ex, path)
+            return None, True
+        except Exception as e:
+            _LOGGER.warning("请求发生未知异常: %s (类型: %s), 路径: %s", e, type(e).__name__, path)
+            return None, True
 
     async def get_arrearage(self) -> Optional[Dict[str, Any]]:
         """

@@ -18,6 +18,7 @@
 """
 
 # ========== 标准库与第三方库 ==========
+import hashlib        # 密码摘要（App 通道存 md5 小写）
 import logging          # 日志记录
 import traceback        # 异常堆栈跟踪，用于调试时输出完整错误信息
 import voluptuous as vol  # 数据模式校验，用于表单字段验证
@@ -46,9 +47,7 @@ from .const import (
     VERSION as INTEGRATION_VERSION,
 )
 from .ele.const import (
-    CONF_IS_PREPAID, CONF_PRICE, CONF_ARK_API_KEY, CONF_ARK_MODEL, CONF_ARK_BASE_URL,
-    CONF_EMAIL_ACCOUNT, CONF_REFRESH_INTERVAL, CONF_NEW_PASSWORD,
-    DEFAULT_ARK_MODEL, DEFAULT_ARK_BASE_URL,
+    CONF_IS_PREPAID, CONF_PRICE, CONF_REFRESH_INTERVAL, CONF_NEW_PASSWORD,
     MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL,
 )
 
@@ -59,6 +58,34 @@ _LOGGER = logging.getLogger(__name__)
 def _text_input(input_type: selector.TextSelectorType = selector.TextSelectorType.TEXT):
     """构建 HA TextSelector（勿将 selector 模块当作函数调用）。"""
     return selector.TextSelector(selector.TextSelectorConfig(type=input_type))
+
+
+# App 通道登录失败原因 → 配置页错误键。把"密码错了"和"被限流"分开报，用户才知道该改密码还是等额度。
+_APP_ERROR_KEYS = {
+    "invalid_auth": "invalid_auth",
+    "rate_limited": "rk001_rate_limit",
+    "cannot_connect": "cannot_connect",
+    "server_busy": "cannot_connect",   # RK007 瞬时超时：当连不上处理，稍后重试
+    # 新设备短信验证 / 需官方 App 的交互式校验：都单独给键，避免误报成密码错误
+    "device_verification": "device_verification",
+    "interactive_challenge": "interactive_challenge_unsupported",
+}
+
+
+async def _ele_app_sign_in(hass, account: str, password: str):
+    """用明文密码做一次国网 App 通道登录。
+
+    返回 (是否成功, 配置页错误键, AppChannel)。channel 一定要返回：新设备验证（4006）
+    要在同一台合成设备上继续发短信/换令牌，重建 channel 会换成另一台设备。
+
+    App 接口收的是密码的 md5 摘要，HA 存的就是摘要；明文只在本函数内用完即丢。
+    """
+    from .ele.app_api import AppChannel
+
+    channel = AppChannel(hass, account, hashlib.md5(password.encode()).hexdigest().lower())
+    if await channel.async_login(force=True):
+        return True, "", channel
+    return False, _APP_ERROR_KEYS.get(channel.last_error, "app_login_failed"), channel
 
 
 # =============================================================================
@@ -174,88 +201,51 @@ class XjGasFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_ele(self, user_input=None):
         """
-        处理电力登录步骤。
-        
+        处理电力登录步骤（App 通道：手机号 + 密码，无验证码/LLM）。
+
         Args:
-            user_input (dict, optional): 用户提交的账号密码和大模型 API Key。
-            
+            user_input (dict, optional): 用户提交的手机号与密码。
+
         Returns:
             FlowResult: 完成配置或显示错误。
         """
         errors = {}
         phone = ""
         password = ""
-        email = ""
-        ark_base_url = DEFAULT_ARK_BASE_URL
-        ark_model = DEFAULT_ARK_MODEL
-        ark_api_key = ""
 
         if user_input is None:
             user_input = {}
         else:
             phone = user_input.get("phone", "").strip()
             password = user_input.get(CONF_PASSWORD, "")
-            email = user_input.get("email", "").strip()
-            ark_base_url = (user_input.get(CONF_ARK_BASE_URL) or DEFAULT_ARK_BASE_URL).strip()
-            ark_model = (user_input.get(CONF_ARK_MODEL) or DEFAULT_ARK_MODEL).strip()
-            ark_api_key = user_input.get(CONF_ARK_API_KEY, "").strip()
 
             if not phone or not password:
                 errors["base"] = "missing_fields"
             elif not phone.isdigit():
                 errors["base"] = "invalid_phone"
-            elif email and "@" not in email:
-                errors["base"] = "invalid_email"
-            elif not ark_api_key:
-                errors["base"] = "missing_llm_key"
             else:
                 try:
-                    from .ele.api import StateGridDataClient
-                    from .ele.const import get_pending_store_key
-                    from .ele import captcha_solver as ele_captcha_solver
+                    ok, err_key, channel = await _ele_app_sign_in(self.hass, phone, password)
+                    if ok:
+                        return await self._ele_finish_login(phone, password)
 
-                    pending_key = get_pending_store_key(phone)
-                    config = {
-                        CONF_ARK_BASE_URL: ark_base_url,
-                        CONF_ARK_MODEL: ark_model,
-                        CONF_ARK_API_KEY: ark_api_key,
-                        CONF_EMAIL_ACCOUNT: email,
-                    }
-                    data_client = StateGridDataClient(hass=self.hass, store_key=pending_key, config=config)
-                    data_client.email_account = email
-                    ele_captcha_solver.configure_llm(ark_api_key, ark_base_url, ark_model)
-
-                    result = await data_client.password_login(phone, password)
-
-                    if result.get("errcode") != 0 and email and data_client._looks_like_rk001_message(result):
-                        _LOGGER.info("[配置流程] 手机号遇RK001流控，自动降级到邮箱登录: %s", email)
-                        result = await data_client.password_login(email, password, encode=False, max_retry=2)
-
-                    if result.get("errcode") == 0:
-                        await self.async_set_unique_id(f"{UTILITY_TYPE_ELE}-{phone}")
-                        self._abort_if_unique_id_configured()
-
-                        await data_client.save_data()
-                        return self.async_create_entry(
-                            title=f"新疆电力 ({phone})",
-                            data={
-                                CONF_UTILITY_TYPE: UTILITY_TYPE_ELE,
-                                CONF_ACCOUNT: phone,
-                            },
-                            options={
-                                CONF_ARK_BASE_URL: ark_base_url,
-                                CONF_ARK_MODEL: ark_model,
-                                CONF_ARK_API_KEY: ark_api_key,
-                                CONF_EMAIL_ACCOUNT: email,
+                    if err_key == "device_verification":
+                        # 新设备首次登录：服务端要求短信验证。用同一台设备发短信，
+                        # 拿到一次性 codeKey 后转去验证码表单。
+                        code_key = await channel.async_send_device_verification_sms()
+                        if not code_key:
+                            errors["base"] = "cannot_send_verification_code"
+                        else:
+                            self._ele_pending = {
+                                "phone": phone,
+                                "digest": hashlib.md5(password.encode()).hexdigest().lower(),
+                                "code_key": code_key,
+                                "channel": channel,
                             }
-                        )
+                            return await self.async_step_ele_verify()
 
-                    errmsg = result.get("errmsg") or "登录失败，请检查账号密码或LLM配置"
-                    _LOGGER.warning("电力登录失败: %s", errmsg)
-                    if data_client._looks_like_rk001_message(result):
-                        errors["base"] = "rk001_rate_limit"
-                    else:
-                        errors["base"] = "invalid_auth"
+                    _LOGGER.warning("电力登录失败: %s", err_key)
+                    errors["base"] = err_key
                 except Exception as e:
                     _LOGGER.error("电力登录失败: %s", e)
                     _LOGGER.debug("电力登录异常详情: %s", traceback.format_exc())
@@ -263,11 +253,7 @@ class XjGasFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema({
             vol.Required("phone", default=phone): _text_input(selector.TextSelectorType.TEL),
-            vol.Optional("email", default=email): _text_input(selector.TextSelectorType.EMAIL),
             vol.Required(CONF_PASSWORD, default=password): _text_input(selector.TextSelectorType.PASSWORD),
-            vol.Required(CONF_ARK_API_KEY, default=ark_api_key): _text_input(selector.TextSelectorType.PASSWORD),
-            vol.Optional(CONF_ARK_BASE_URL, default=ark_base_url): _text_input(),
-            vol.Optional(CONF_ARK_MODEL, default=ark_model): _text_input(),
         })
 
         _LOGGER.debug(
@@ -280,6 +266,75 @@ class XjGasFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="ele",
             data_schema=data_schema,
             errors=errors,
+        )
+
+    async def _ele_finish_login(self, phone: str, password: str, digest: str | None = None):
+        """登录（含短信验证）成功后的收尾：写唯一 ID、凭证落 store、建条目。
+
+        `digest` 优先：新设备短信验证那条路手里没有明文密码（只有 pending 里的摘要），
+        传空 password 会让这里把 md5("") 写进 store，之后 App 通道取数就永久登不上了。
+        """
+        from .ele.const import get_pending_store_key
+        from .ele.data_client import StateGridDataClient
+
+        await self.async_set_unique_id(f"{UTILITY_TYPE_ELE}-{phone}")
+        self._abort_if_unique_id_configured()
+
+        if not digest:
+            digest = hashlib.md5(password.encode()).hexdigest().lower()
+
+        # 凭证只落 store：App 通道取数读的就是这两项。
+        pending_key = get_pending_store_key(phone)
+        data_client = StateGridDataClient(hass=self.hass, store_key=pending_key, config=None)
+        data_client.account = phone
+        data_client.password = digest
+        try:
+            await data_client.save_data()
+        except Exception:
+            _LOGGER.exception("保存电力登录凭证失败，但登录已成功。")
+
+        return self.async_create_entry(
+            title=f"新疆电力 ({phone})",
+            data={
+                CONF_UTILITY_TYPE: UTILITY_TYPE_ELE,
+                CONF_ACCOUNT: phone,
+            },
+            options={},
+        )
+
+    async def async_step_ele_verify(self, user_input=None):
+        """新设备短信验证：输入 6 位验证码，回填到 c2/f01 密码登录请求换令牌。"""
+        errors = {}
+        pending = getattr(self, "_ele_pending", None)
+        if not pending:
+            return self.async_abort(reason="verification_expired")
+
+        if user_input is not None:
+            code = str(user_input.get("verification_code", "")).strip()
+            if len(code) != 6 or not code.isdigit():
+                errors["base"] = "invalid_verification_code"
+            else:
+                try:
+                    ok = await pending["channel"].async_login_with_code(code, pending["code_key"])
+                except Exception as e:
+                    _LOGGER.error("电力短信验证异常: %s", e)
+                    _LOGGER.debug("短信验证异常详情: %s", traceback.format_exc())
+                    ok = False
+
+                if ok:
+                    phone = pending["phone"]
+                    digest = pending.get("digest") or ""
+                    self._ele_pending = None
+                    return await self._ele_finish_login(phone, "", digest=digest)
+                errors["base"] = "invalid_verification_code"
+
+        return self.async_show_form(
+            step_id="ele_verify",
+            data_schema=vol.Schema({
+                vol.Required("verification_code"): _text_input(selector.TextSelectorType.TEXT),
+            }),
+            errors=errors,
+            description_placeholders={"phone_suffix": str(pending.get("phone", ""))[-4:]},
         )
 
     @staticmethod
@@ -491,32 +546,20 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
     async def async_step_login_settings(self, user_input=None):
-        """登录与验证码设置（对齐 state_grid 选项表单）。"""
+        """登录与刷新设置（App 通道：改密码走 App 验证，无验证码/LLM）。"""
         return await self._async_step_login_settings(user_input)
 
     async def _async_step_login_settings(self, user_input=None):
         current = {**(self._config_entry.data or {}), **(self._config_entry.options or {})}
         if self.data_client:
-            current.setdefault(CONF_ARK_API_KEY, self.data_client.captcha_solver.api_key)
-            current.setdefault(CONF_ARK_BASE_URL, self.data_client.captcha_solver.base_url)
-            current.setdefault(CONF_ARK_MODEL, self.data_client.captcha_solver.model)
-            current.setdefault(CONF_EMAIL_ACCOUNT, self.data_client.email_account)
             current.setdefault(CONF_REFRESH_INTERVAL, self.data_client.refresh_interval)
 
         if user_input is not None:
             errors: dict[str, str] = {}
             new_data = dict(self._config_entry.options or {})
-            for key in (CONF_ARK_API_KEY, CONF_ARK_BASE_URL, CONF_ARK_MODEL, CONF_EMAIL_ACCOUNT):
-                raw_val = user_input.get(key)
-                val = raw_val.strip() if isinstance(raw_val, str) else ""
-                if val:
-                    new_data[key] = val
-                elif key in current and current[key]:
-                    new_data[key] = current[key]
-
-            email_account = new_data.get(CONF_EMAIL_ACCOUNT, "")
-            if email_account and "@" not in email_account:
-                return await self._async_show_login_settings_form(current, errors={"base": "invalid_email"})
+            # 清理旧版本遗留的验证码/LLM/邮箱配置键
+            for legacy in ("ark_api_key", "ark_base_url", "ark_model", "email_account", "email"):
+                new_data.pop(legacy, None)
 
             refresh_interval = user_input.get(CONF_REFRESH_INTERVAL)
             if refresh_interval:
@@ -530,7 +573,7 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
             elif CONF_REFRESH_INTERVAL in current:
                 new_data[CONF_REFRESH_INTERVAL] = current[CONF_REFRESH_INTERVAL]
 
-            # 新密码：留空=不修改；填值=触发一次登录验证，成功后写入 Store
+            # 新密码：留空=不修改；填值=走 App 通道验证一次，成功后写入 Store
             new_password_raw = user_input.get(CONF_NEW_PASSWORD) or ""
             new_password = new_password_raw.strip() if isinstance(new_password_raw, str) else ""
 
@@ -538,97 +581,34 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
                 if not self.data_client:
                     errors[CONF_NEW_PASSWORD] = "no_account"
                 else:
-                    if CONF_ARK_API_KEY in new_data:
-                        self.data_client.captcha_solver.api_key = new_data[CONF_ARK_API_KEY]
-                    if CONF_ARK_BASE_URL in new_data:
-                        self.data_client.captcha_solver.base_url = new_data[CONF_ARK_BASE_URL]
-                    if CONF_ARK_MODEL in new_data:
-                        self.data_client.captcha_solver.model = new_data[CONF_ARK_MODEL]
-                    if CONF_EMAIL_ACCOUNT in new_data:
-                        self.data_client.email_account = new_data[CONF_EMAIL_ACCOUNT]
-                    if self.data_client.captcha_solver.api_key:
-                        from .ele import captcha_solver as ele_captcha_solver
-                        ele_captcha_solver.configure_llm(
-                            self.data_client.captcha_solver.api_key,
-                            self.data_client.captcha_solver.base_url,
-                            self.data_client.captcha_solver.model,
-                        )
-
                     phone = self.data_client.account or ""
-                    email = self.data_client.email_account or ""
                     if not phone:
                         errors[CONF_NEW_PASSWORD] = "no_account"
-                    elif self.data_client.is_rk001_cooldown():
-                        errors[CONF_NEW_PASSWORD] = "rk001_cooldown_cannot_verify"
                     else:
-                        result = None
                         try:
-                            _LOGGER.info(
-                                "[修改密码] 验证新密码，手机号=%s，备用邮箱=%s",
-                                phone, email or "未配置",
+                            ok, err_key, _channel = await _ele_app_sign_in(
+                                self.hass, phone, new_password
                             )
-                            result = await self.data_client.password_login(
-                                phone, new_password, encode=False, max_retry=3, force_refresh=True
-                            )
-                            if result.get("errcode") != 0 and email and (
-                                result.get("rk001")
-                                or "RK001" in (result.get("errmsg") or "")
-                                or "流控" in (result.get("errmsg") or "")
-                            ):
-                                _LOGGER.info("[修改密码] 手机号遇RK001流控，邮箱降级验证: %s", email)
-                                try:
-                                    result = await self.data_client.password_login(
-                                        email, new_password, encode=False, max_retry=2, force_refresh=True
-                                    )
-                                except Exception as fallback_exc:
-                                    _LOGGER.exception("[修改密码] 邮箱降级验证异常: %s", fallback_exc)
-                                    result = {"errcode": 1, "errmsg": f"邮箱降级验证异常: {fallback_exc}"}
-                        except Exception as exc:
-                            _LOGGER.error("[修改密码] 验证异常: %s", exc)
-                            errors[CONF_NEW_PASSWORD] = "cannot_connect"
-                            result = {"errcode": 1, "errmsg": str(exc)}
-
-                        if not errors:
-                            if result.get("errcode") == 0:
-                                # 邮箱降级验证成功时 password_login 会把 account 写成邮箱，改回手机号
-                                if phone and self.data_client.account != phone:
-                                    self.data_client.account = phone
-                                    await self.data_client.save_data()
-                                _LOGGER.info("[修改密码] 新密码验证成功，已写入 Store")
+                            if ok:
+                                self.data_client.password = hashlib.md5(
+                                    new_password.encode()
+                                ).hexdigest().lower()
+                                await self.data_client.save_data()
+                                _LOGGER.info("[修改密码] 新密码经 App 通道验证通过，已写入 Store")
                             else:
-                                errmsg = (
-                                    result.get("errmsg")
-                                    or result.get("message")
-                                    or "新密码验证失败"
-                                )
-                                _LOGGER.warning("[修改密码] 新密码验证失败: %s", errmsg)
-                                if "RK001" in errmsg or "流控" in errmsg or "日额度" in errmsg:
-                                    errors[CONF_NEW_PASSWORD] = "rk001_rate_limit"
-                                else:
-                                    errors[CONF_NEW_PASSWORD] = "invalid_auth"
+                                _LOGGER.warning("[修改密码] 新密码验证失败: %s", err_key)
+                                errors[CONF_NEW_PASSWORD] = err_key
+                        except Exception as exc:
+                            _LOGGER.exception("[修改密码] 验证异常: %s", exc)
+                            errors[CONF_NEW_PASSWORD] = "cannot_connect"
 
             if errors:
                 return await self._async_show_login_settings_form(current, errors=errors)
 
-            if CONF_ARK_API_KEY in new_data:
-                self.data_client.captcha_solver.api_key = new_data[CONF_ARK_API_KEY]
-            if CONF_ARK_BASE_URL in new_data:
-                self.data_client.captcha_solver.base_url = new_data[CONF_ARK_BASE_URL]
-            if CONF_ARK_MODEL in new_data:
-                self.data_client.captcha_solver.model = new_data[CONF_ARK_MODEL]
-            if CONF_EMAIL_ACCOUNT in new_data:
-                self.data_client.email_account = new_data[CONF_EMAIL_ACCOUNT]
-            if CONF_REFRESH_INTERVAL in new_data:
-                self.data_client.refresh_interval = int(new_data[CONF_REFRESH_INTERVAL])
-
-            if self.data_client.captcha_solver.api_key:
-                from .ele import captcha_solver as ele_captcha_solver
-                ele_captcha_solver.configure_llm(
-                    self.data_client.captcha_solver.api_key,
-                    self.data_client.captcha_solver.base_url,
-                    self.data_client.captcha_solver.model,
-                )
-            await self.data_client.save_data()
+            if self.data_client:
+                if CONF_REFRESH_INTERVAL in new_data:
+                    self.data_client.refresh_interval = int(new_data[CONF_REFRESH_INTERVAL])
+                await self.data_client.save_data()
             return self.async_create_entry(title="", data=new_data)
 
         return await self._async_show_login_settings_form(current)
@@ -648,19 +628,6 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
         data_schema = vol.Schema({
-            vol.Optional(CONF_ARK_API_KEY, default=""): _text_input(selector.TextSelectorType.PASSWORD),
-            vol.Optional(
-                CONF_ARK_BASE_URL,
-                default=_str(CONF_ARK_BASE_URL, DEFAULT_ARK_BASE_URL),
-            ): _text_input(),
-            vol.Optional(
-                CONF_ARK_MODEL,
-                default=_str(CONF_ARK_MODEL, DEFAULT_ARK_MODEL),
-            ): _text_input(),
-            vol.Optional(
-                CONF_EMAIL_ACCOUNT,
-                default=_str(CONF_EMAIL_ACCOUNT, getattr(self.data_client, "email_account", "")),
-            ): _text_input(selector.TextSelectorType.EMAIL),
             vol.Optional(
                 CONF_REFRESH_INTERVAL,
                 default=refresh_val,
@@ -761,7 +728,3 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema(data_schema),
             description_placeholders={"standard": "统一电价"}  # 表单描述中的占位符，可在 translations 中扩展多语言
         )
-
-    async def async_step_captcha_config(self, user_input=None):
-        """兼容旧菜单项，跳转到 login_settings。"""
-        return await self._async_step_login_settings(user_input)

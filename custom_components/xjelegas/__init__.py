@@ -15,7 +15,11 @@
 """
 # ========== 标准库 ==========
 import logging  # 日志记录，用于 _LOGGER 输出调试/信息/警告
+import secrets  # 生成一次性 sidecar 推送 webhook id
 from typing import Any  # 类型注解，用于泛型或动态类型参数
+
+# ========== 第三方 ==========
+from aiohttp import web  # sidecar 推送 webhook 的请求/响应对象
 
 # ========== Home Assistant ==========
 # Home Assistant 配置条目相关
@@ -28,6 +32,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 # HTTP 静态路径配置，用于注册前端静态文件服务
 from homeassistant.components.http import StaticPathConfig
+# sidecar 推送通道：浏览器容器把真实网页响应 POST 到 /api/webhook/<id>
+from homeassistant.components.webhook import (
+    async_register as webhook_register,
+    async_unregister as webhook_unregister,
+)
 
 # 引入常量定义，确保与 const.py 中的域名、版本、配置键等保持一致
 from .const import (
@@ -51,6 +60,9 @@ _LOGGER = logging.getLogger(__name__)
 # 目前仅支持 sensor (传感器) 平台，用于展示电费/气费、用量等数据
 # 后续如需扩展（如 binary_sensor、switch 等）可在此追加
 PLATFORMS: list[str] = ["sensor"]
+
+# sidecar 推送通道：webhook id 存在 entry.data 里的键名（每个 entry 一个随机 id）
+CONF_PUSH_WEBHOOK = "push_webhook_id"
 
 # Lovelace 卡片前端资源相关常量
 CARD_URL_BASE = "/xjelegas"
@@ -159,6 +171,51 @@ async def _setup_xjelegas_card(hass: HomeAssistant, include_lovelace: bool = Tru
     return True
 
 
+async def _async_setup_push_webhook(
+    hass: HomeAssistant, entry: ConfigEntry, data_client
+) -> None:
+    """注册 sidecar 推送入口：/api/webhook/<id>（移植自 state_grid/__init__.py）。
+
+    id 是随机 128 位，首次 setup 生成后写进 entry.data 持久化，用户不用在任何界面里填。
+    只允许内网推送（sidecar 与 HA 在同一局域网），外网访问直接拒。
+
+    这条通道是 App 通道之外的**备用数据源**：当 App 网关不可用（频控/网关维护）时，
+    可由浏览器容器抓一份真实网页响应 POST 进来，`ingest_push` 会把它当成本轮载荷消费。
+    """
+    webhook_id = (entry.data or {}).get(CONF_PUSH_WEBHOOK)
+    if not webhook_id:
+        webhook_id = secrets.token_hex(16)
+        hass.config_entries.async_update_entry(
+            entry, data={**(entry.data or {}), CONF_PUSH_WEBHOOK: webhook_id}
+        )
+    # 每次 setup 都打一遍，日志滚没了还能去 .storage/core.config_entries 里捞。
+    # 用 warning 级：这台 HA 容器的控制台只放 WARNING 以上，info 级的地址等于没打。
+    _LOGGER.warning("ele sidecar 推送地址: /api/webhook/%s", webhook_id)
+
+    async def handle_push(
+        hass: HomeAssistant, webhook_id: str, request: web.Request
+    ) -> web.Response:
+        try:
+            bundle = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "body 不是 JSON"}, status=400)
+        count = await data_client.ingest_push(bundle)
+        # 先回响应再刷新：解析要几秒，别让 sidecar 干等一个可能超时的大请求
+        coordinator = data_client.coordinator
+        if coordinator is not None:
+            hass.async_create_task(coordinator.async_refresh())
+        else:
+            _LOGGER.warning("收到 sidecar 推送但 coordinator 还没就绪，数据留在缓存里等下一次轮询")
+        return web.json_response(
+            {"ok": True, "stored": count, "meta": data_client.push_meta}
+        )
+
+    webhook_register(
+        hass, DOMAIN, "ele sidecar push", webhook_id, handle_push, local_only=True
+    )
+    entry.async_on_unload(lambda: webhook_unregister(hass, webhook_id))
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """
     通过 Config Entry (UI 配置条目) 设置集成。
@@ -182,8 +239,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     if utility_type == UTILITY_TYPE_ELE:
         # ========== 电力类型：新疆电力 ==========
         from .ele.const import get_store_key, get_pending_store_key
-        from .ele.storage import async_load_from_store, async_remove_store, async_save_to_store
-        from .ele.api import StateGridDataClient
+        from .ele.utils.store import async_load_from_store, async_remove_store, async_save_to_store
+        from .ele.data_client import StateGridDataClient
 
         # 获取与当前 entry_id 对应的存储键，用于读写 .storage 中的持久化数据
         store_key = get_store_key(entry.entry_id)
@@ -204,7 +261,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         
         # 合并配置选项：entry.options 中的固定电价等覆盖存储中的值
         # 用户可在集成选项中修改电价，优先于 .storage 中的历史值
-        from .ele.const import CONF_PRICE, CONF_ARK_API_KEY, CONF_ARK_MODEL, CONF_ARK_BASE_URL, CONF_EMAIL_ACCOUNT, CONF_REFRESH_INTERVAL, CONF_IS_PREPAID, MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL
+        from .ele.const import CONF_PRICE, CONF_REFRESH_INTERVAL, CONF_IS_PREPAID, MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL
         options = entry.options or {}
         if options.get(CONF_PRICE) is not None:
             config = config or {}
@@ -212,26 +269,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         elif options.get("average_price") is not None:
             config = config or {}
             config[CONF_PRICE] = float(options["average_price"])
-
-        # 读取大模型 API Key 配置
-        if options.get(CONF_ARK_API_KEY) is not None:
-            config = config or {}
-            config[CONF_ARK_API_KEY] = options[CONF_ARK_API_KEY]
-
-        # 读取大模型名称配置
-        if options.get(CONF_ARK_MODEL) is not None:
-            config = config or {}
-            config[CONF_ARK_MODEL] = options[CONF_ARK_MODEL]
-
-        # 读取大模型 API 接入地址配置
-        if options.get(CONF_ARK_BASE_URL) is not None:
-            config = config or {}
-            config[CONF_ARK_BASE_URL] = options[CONF_ARK_BASE_URL]
-
-        # 读取备用邮箱（RK001 流控降级）
-        if options.get(CONF_EMAIL_ACCOUNT) is not None:
-            config = config or {}
-            config[CONF_EMAIL_ACCOUNT] = options[CONF_EMAIL_ACCOUNT]
 
         # 读取刷新间隔（与 state_grid 一致，clamp 到 12-48 小时）
         if options.get(CONF_REFRESH_INTERVAL) is not None:
@@ -271,6 +308,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
         
         hass.data[DOMAIN][entry.entry_id] = data_client
+
+        # 注册 sidecar 推送 webhook（App 通道之外的备用数据源，见函数 docstring）
+        await _async_setup_push_webhook(hass, entry, data_client)
     # 燃气类型：无需在此创建客户端，由 gas/sensor.py 中的平台 setup 处理
 
     # 将配置条目转发给各平台（sensor 等），由平台创建实体
@@ -286,19 +326,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     配置条目版本迁移（v1 → v2）。
 
-    v2 将电力登录表单改为手机号 + 备用邮箱 + LLM 配置，选项键统一为 email_account。
+    v2 起电力改用国网 App 通道登录，仅存手机号；选项键不再包含备用邮箱/LLM 配置。
     """
     if entry.version >= 2:
         return True
 
     _LOGGER.info("Migrating xjelegas entry %s from version %s to 2", entry.entry_id, entry.version)
 
-    from .ele.const import CONF_EMAIL_ACCOUNT
-    new_options = dict(entry.options or {})
-    if new_options.get("email") and not new_options.get(CONF_EMAIL_ACCOUNT):
-        new_options[CONF_EMAIL_ACCOUNT] = new_options.pop("email")
-
-    hass.config_entries.async_update_entry(entry, version=2, options=new_options)
+    # App 通道取数不再使用备用邮箱/LLM 配置：剔除遗留选项键后升级版本号。
+    options = dict(entry.options or {})
+    for legacy in ("ark_api_key", "ark_base_url", "ark_model", "email_account", "email"):
+        options.pop(legacy, None)
+    hass.config_entries.async_update_entry(entry, version=2, options=options)
     return True
 
 

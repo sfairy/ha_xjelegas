@@ -25,7 +25,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity  # 协调
 import logging
 # ========== 本模块 ==========
 from .const import DOMAIN
-from .api import StateGridDataClient, StateGridCoordinator
+from .data_client import StateGridDataClient
+from .coordinator import StateGridCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 

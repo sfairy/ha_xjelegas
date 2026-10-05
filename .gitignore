@@ -15,3 +15,9 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# 本地调试脚本，不入库
+debug_info.py
+
+# 调试脚本落盘的合成设备身份（含设备令牌，切勿入库）
+.ele_debug_device.json

@@ -21,33 +21,40 @@
         "title": "新疆电力 - 账号登录",
         "data": {
           "phone": "手机号",
-          "email": "备用邮箱（流控降级用）",
-          "password": "密码",
-          "ark_api_key": "LLM API Key",
-          "ark_base_url": "LLM Base URL",
-          "ark_model": "LLM 模型"
+          "password": "密码"
+        }
+      },
+      "ele_verify": {
+        "title": "新设备安全验证",
+        "description": "国网需要验证这台新设备。请输入发送到手机尾号 {phone_suffix} 的 6 位短信验证码。",
+        "data": {
+          "verification_code": "短信验证码"
         }
       }
     },
     "error": {
       "missing_fields": "请填写手机号和密码",
-      "invalid_auth": "账号或密码错误，或验证码识别失败",
+      "invalid_auth": "账号或密码错误",
       "cannot_connect": "无法连接到服务器",
-      "missing_llm_key": "请配置 LLM API Key（用于验证码识别）",
-      "invalid_email": "请输入有效的邮箱地址",
+      "app_login_failed": "国网 App 通道登录失败，请稍后重试",
       "invalid_phone": "请输入有效的手机号码",
       "invalid_refresh_interval": "刷新间隔须为 12-48 之间的整数（小时）",
-      "rk001_rate_limit": "密码登录日额度已用完(RK001)，请配置备用邮箱或等待明日重试"
+      "rk001_rate_limit": "登录遇国网限流(RK001)，请稍后重试",
+      "device_verification": "国网要求新设备安全验证，正在下发短信",
+      "cannot_send_verification_code": "下发验证码短信失败，请稍后重试",
+      "invalid_verification_code": "验证码错误或已过期",
+      "interactive_challenge_unsupported": "国网要求交互式安全校验(RK008)，请先在官方「网上国网」App 完成验证后再试"
     },
     "abort": {
-      "client_not_found": "集成未正确加载，请尝试重新加载或重启 Home Assistant。"
+      "client_not_found": "集成未正确加载，请尝试重新加载或重启 Home Assistant。",
+      "verification_expired": "设备验证会话已过期，请重新添加集成。"
     }
   },
   "options": {
     "step": {
       "init": {
         "menu_options": {
-          "login_settings": "登录与验证码设置",
+          "login_settings": "登录与刷新设置",
           "debug": "调试设置",
           "billing_config": "统一电价设置",
           "pricing": "计费模式",
@@ -57,12 +64,8 @@
       "login_settings": {
         "title": "新疆电力 - 选项",
         "data": {
-          "ark_api_key": "LLM API Key（留空不修改）",
-          "ark_base_url": "LLM Base URL",
-          "ark_model": "LLM 模型",
-          "email_account": "备用邮箱（流控降级用）",
           "refresh_interval": "刷新间隔（小时，12-48）",
-          "new_password": "新密码（留空不修改；填写后会触发一次登录验证）"
+          "new_password": "新密码（留空不修改；填写后会触发一次 App 通道登录验证）"
         }
       },
       "debug": {
@@ -131,13 +134,16 @@
       "unknown_error": "配置过程中发生未知错误，请稍后重试。"
     },
     "error": {
-      "invalid_auth": "账号或密码错误，或验证码识别失败",
+      "invalid_auth": "账号或密码错误",
       "cannot_connect": "无法连接到服务器",
-      "invalid_email": "请输入有效的邮箱地址",
+      "app_login_failed": "国网 App 通道登录失败，请稍后重试",
+      "device_verification": "国网要求新设备安全验证，正在下发短信",
+      "cannot_send_verification_code": "下发验证码短信失败，请稍后重试",
+      "invalid_verification_code": "验证码错误或已过期",
+      "interactive_challenge_unsupported": "国网要求交互式安全校验(RK008)，请先在官方「网上国网」App 完成验证后再试",
       "invalid_refresh_interval": "刷新间隔须为 12-48 之间的整数（小时）",
-      "rk001_rate_limit": "密码登录日额度已用完(RK001)，请配置备用邮箱或等待明日重试",
-      "no_account": "未找到运行中的集成实例或账号信息，请重试或重启 Home Assistant",
-      "rk001_cooldown_cannot_verify": "当前处于 RK001 流控冷却期，无法验证新密码，请明日0点后重试"
+      "rk001_rate_limit": "登录遇国网限流(RK001)，请稍后重试",
+      "no_account": "未找到运行中的集成实例或账号信息，请重试或重启 Home Assistant"
     }
   }
 }
