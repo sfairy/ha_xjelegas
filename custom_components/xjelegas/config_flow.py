@@ -65,10 +65,9 @@ _APP_ERROR_KEYS = {
     "invalid_auth": "invalid_auth",
     "rate_limited": "rk001_rate_limit",
     "cannot_connect": "cannot_connect",
-    "server_busy": "cannot_connect",   # RK007 瞬时超时：当连不上处理，稍后重试
-    # 新设备短信验证 / 需官方 App 的交互式校验：都单独给键，避免误报成密码错误
+    # 新设备短信验证 / 需网页腾讯组件的交互式校验：都单独给键，避免误报成密码错误
     "device_verification": "device_verification",
-    "interactive_challenge": "interactive_challenge_unsupported",
+    "captcha_required": "captcha_required",
 }
 
 

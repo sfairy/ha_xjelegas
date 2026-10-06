@@ -43,7 +43,7 @@
       "device_verification": "State Grid requires new-device verification; a code is being sent",
       "cannot_send_verification_code": "Could not send the verification SMS. Please retry later",
       "invalid_verification_code": "Invalid or expired verification code",
-      "interactive_challenge_unsupported": "State Grid requires an interactive check (RK008) that must be completed in the official 网上国网 App first"
+      "captcha_required": "State Grid asked for a security check at this step (a slider or click captcha; the type code is RK007/RK008/RK1003). That check has to be completed by Tencent's web widget, which the App interface cannot do here, so retrying won't make it go away. This is not a wrong password and not your network - the \"network timeout\" wording is the site's generic text for these codes"
     },
     "abort": {
       "client_not_found": "Integration not loaded correctly. Please try reloading or restarting Home Assistant.",
@@ -95,7 +95,7 @@
       "device_verification": "State Grid requires new-device verification; a code is being sent",
       "cannot_send_verification_code": "Could not send the verification SMS. Please retry later",
       "invalid_verification_code": "Invalid or expired verification code",
-      "interactive_challenge_unsupported": "State Grid requires an interactive check (RK008) that must be completed in the official 网上国网 App first",
+      "captcha_required": "State Grid asked for a security check at this step (a slider or click captcha; the type code is RK007/RK008/RK1003). That check has to be completed by Tencent's web widget, which the App interface cannot do here, so retrying won't make it go away. This is not a wrong password and not your network - the \"network timeout\" wording is the site's generic text for these codes",
       "invalid_refresh_interval": "Refresh interval must be an integer between 12 and 48 (hours)",
       "rk001_rate_limit": "State Grid rate limit (RK001) hit. Please retry later",
       "no_account": "No running integration instance or account found. Please retry or restart Home Assistant"

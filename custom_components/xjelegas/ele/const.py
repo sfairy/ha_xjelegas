@@ -14,7 +14,7 @@ DOMAIN = "xjelegas"  # 集成域，与燃气模块共用
 PACKAGE_NAME = "custom_components.xjelegas"  # 包路径，用于日志与存储
 
 # ---------- 版本信息 ----------
-VERSION = "2.0.0"  # 电力模块版本（与集成 manifest 同步）
+VERSION = "2.0.1"  # 电力模块版本（与集成 manifest 同步）
 VERSION_STORAGE = 1  # 存储结构版本，用于数据迁移兼容
 
 # ---------- 配置项键名 ----------
@@ -24,7 +24,18 @@ CONF_IS_PREPAID = "is_prepaid"  # 是否预付费：None=自动从 API 判断，
 # ---------- 流控相关错误码 ----------
 # 11401 是服务端返回的 RK001 限流码。App 通道（app_api）也用它判断"密码没错但今天到顶了"，
 # 以便配置页把"密码错了"和"被限流"分开报。命名对齐 state_grid/const.py。
-RATE_LIMIT_CODES = {"11401"}
+# 11401 是网关码，RK001 有时直接坐在 code 上，两者都要认。
+RATE_LIMIT_CODES = {"11401", "RK001"}
+
+# 站点前端自己把这三个码当"要弹哪种验证码"用（对齐 state_grid/const.py）：
+# complexSliderType={'RK1003':'clickImg','RK008':'clickWord','RK007':'blockPuzzle'}
+# 它们的原话是"网络连接超时,请重试"，那句是站点对这类码的统一兜底文案，不是网络故障：
+# 请求到了、信封也解得开，重试不会让它变成不要，只能由网页上的腾讯组件完成。
+CAPTCHA_CODES = {"RK007", "RK008", "RK1003"}
+
+# 服务端说"这份会话已经不算数了"的码。它会**在 expires_at 之前**就作废（上游
+# hass-state-grid issue #2：装好第 3 天就没了），所以不能只信本地存的那个时间戳。
+SESSION_DEAD_CODES = {"-200", "-201"}
 
 # ---------- 刷新间隔（与 state_grid 一致） ----------
 MIN_REFRESH_INTERVAL = 12   # 最小刷新间隔（小时）

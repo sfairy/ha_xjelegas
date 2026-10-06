@@ -43,7 +43,7 @@
       "device_verification": "国网要求新设备安全验证，正在下发短信",
       "cannot_send_verification_code": "下发验证码短信失败，请稍后重试",
       "invalid_verification_code": "验证码错误或已过期",
-      "interactive_challenge_unsupported": "国网要求交互式安全校验(RK008)，请先在官方「网上国网」App 完成验证后再试"
+      "captcha_required": "国网在该步骤要求先过一次安全校验（滑块或点选，服务端给的类型码是 RK007/RK008/RK1003）。这种校验要由网页上的腾讯组件完成，App 接口面上我们做不到，所以反复重试不会让它变成不要。这不是密码错，也不是你的网络问题——日志里那句「网络连接超时」是站点对这类码的统一说法"
     },
     "abort": {
       "client_not_found": "集成未正确加载，请尝试重新加载或重启 Home Assistant。",
@@ -140,7 +140,7 @@
       "device_verification": "国网要求新设备安全验证，正在下发短信",
       "cannot_send_verification_code": "下发验证码短信失败，请稍后重试",
       "invalid_verification_code": "验证码错误或已过期",
-      "interactive_challenge_unsupported": "国网要求交互式安全校验(RK008)，请先在官方「网上国网」App 完成验证后再试",
+      "captcha_required": "国网在该步骤要求先过一次安全校验（滑块或点选，服务端给的类型码是 RK007/RK008/RK1003）。这种校验要由网页上的腾讯组件完成，App 接口面上我们做不到，所以反复重试不会让它变成不要。这不是密码错，也不是你的网络问题——日志里那句「网络连接超时」是站点对这类码的统一说法",
       "invalid_refresh_interval": "刷新间隔须为 12-48 之间的整数（小时）",
       "rk001_rate_limit": "登录遇国网限流(RK001)，请稍后重试",
       "no_account": "未找到运行中的集成实例或账号信息，请重试或重启 Home Assistant"

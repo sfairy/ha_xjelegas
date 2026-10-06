@@ -174,10 +174,11 @@ async def _setup_xjelegas_card(hass: HomeAssistant, include_lovelace: bool = Tru
 async def _async_setup_push_webhook(
     hass: HomeAssistant, entry: ConfigEntry, data_client
 ) -> None:
-    """注册 sidecar 推送入口：/api/webhook/<id>（移植自 state_grid/__init__.py）。
+    """注册网页兜底推送入口：/api/webhook/<id>（移植自 state_grid/__init__.py）。
 
     id 是随机 128 位，首次 setup 生成后写进 entry.data 持久化，用户不用在任何界面里填。
-    只允许内网推送（sidecar 与 HA 在同一局域网），外网访问直接拒。
+    只允许内网推送（推送方与 HA 在同一局域网），外网访问直接拒。
+    没有推送过来时这条路完全不参与供数，正常安装的人不需要知道它的存在。
 
     这条通道是 App 通道之外的**备用数据源**：当 App 网关不可用（频控/网关维护）时，
     可由浏览器容器抓一份真实网页响应 POST 进来，`ingest_push` 会把它当成本轮载荷消费。
@@ -190,28 +191,35 @@ async def _async_setup_push_webhook(
         )
     # 每次 setup 都打一遍，日志滚没了还能去 .storage/core.config_entries 里捞。
     # 用 warning 级：这台 HA 容器的控制台只放 WARNING 以上，info 级的地址等于没打。
-    _LOGGER.warning("ele sidecar 推送地址: /api/webhook/%s", webhook_id)
+    _LOGGER.warning(
+        "ele 网页兜底推送入口: /api/webhook/%s（只有浏览器容器 POST 过来才供数，没收到推送时不参与）",
+        webhook_id,
+    )
 
     async def handle_push(
         hass: HomeAssistant, webhook_id: str, request: web.Request
     ) -> web.Response:
+        # 打在解析之前：任何一次 HTTP 命中都留得下痕迹（方法+来源，不含钩子地址本身）。
+        # 这样"到底有没有人在推"可以直接用一个空 body 的请求验出来，而不用真推一份
+        # 载荷——ingest_push 是整包替换，试错会把 App 通道那份好数据顶掉。
+        _LOGGER.warning("收到推送请求：%s 来自 %s", request.method, request.remote)
         try:
             bundle = await request.json()
         except Exception:
             return web.json_response({"ok": False, "error": "body 不是 JSON"}, status=400)
         count = await data_client.ingest_push(bundle)
-        # 先回响应再刷新：解析要几秒，别让 sidecar 干等一个可能超时的大请求
+        # 先回响应再刷新：解析要几秒，别让推送方干等一个可能超时的大请求
         coordinator = data_client.coordinator
         if coordinator is not None:
             hass.async_create_task(coordinator.async_refresh())
         else:
-            _LOGGER.warning("收到 sidecar 推送但 coordinator 还没就绪，数据留在缓存里等下一次轮询")
+            _LOGGER.warning("收到推送但 coordinator 还没就绪，数据留在缓存里等下一次轮询")
         return web.json_response(
             {"ok": True, "stored": count, "meta": data_client.push_meta}
         )
 
     webhook_register(
-        hass, DOMAIN, "ele sidecar push", webhook_id, handle_push, local_only=True
+        hass, DOMAIN, "ele 网页兜底推送", webhook_id, handle_push, local_only=True
     )
     entry.async_on_unload(lambda: webhook_unregister(hass, webhook_id))
 

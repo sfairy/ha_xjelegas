@@ -29,7 +29,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 from .utils.crypt import (AA, BB, SM4_DECRYPT, SM4_ENCRYPT, m_hash, m_kdf)
-from .const import RATE_LIMIT_CODES
+from .const import CAPTCHA_CODES, RATE_LIMIT_CODES, SESSION_DEAD_CODES
 from .utils.logger import LOGGER
 
 APP_BASE_URL = "https://csc-service.sgcc.com.cn:28630"
@@ -38,9 +38,9 @@ DEVICE_SMS_PATH = "emss-uia-center-front/member/c1/f01"   # businessType=loginde
 DAILY_PATH = "emss-bia-bill-front/member/c11/f01"
 MONTHLY_PATH = "emss-bia-bill-front/member/c51/f04"
 BALANCE_PATH = "emss-bia-balance-front/member/c16/f01"
-# 4006=新设备需短信验证；RK008=需官方 App 的交互式校验（短信码过不了）
+# 4006=新设备需短信验证（这一步能救：发一条 logindevice 短信拿 codeKey 再带码重登）。
+# 需要网页腾讯组件完成的交互式校验（RK007/RK008/RK1003）由 CAPTCHA_CODES 统一归类。
 DEVICE_VERIFICATION_CODE = "4006"
-INTERACTIVE_CHALLENGE_CODES = {"RK008"}
 
 SERVER_PUBLIC_KEY_HEX = (
     "0409C10D38CF7B4E28097EAAA519E3157C9B4E72194CD13BD11932CE40ED5624A"
@@ -386,7 +386,16 @@ class AppChannel:
                          if isinstance(v, dict)]
         # 原始行也要恢复：灌推送缓存时喂给网页解析器的是原样字段，不是 AppAccount
         self.raw_accounts = [v for v in (s.get("accounts") or []) if isinstance(v, dict)]
-        return bool(self.token) and int(s.get("expires_at") or 0) > time.time() + TOKEN_LIFE_SAFETY_S
+        if not self.token:
+            return False
+        left = int(s.get("expires_at") or 0) - time.time()
+        if left > TOKEN_LIFE_SAFETY_S:
+            return True
+        # 到这一步就是"提前一天主动重登"那次（约装好后第 14 天）。它是整条路线上唯一
+        # 没被验证过的动作，日志单独说一句，好对着时间看服务端这次要不要人工验证。
+        LOGGER.warning("App 会话只剩 %.2f 天（不足 %d 天就重登），本轮重新登录一次",
+                       max(left, 0) / 86400.0, TOKEN_LIFE_SAFETY_S // 86400)
+        return False
 
     async def async_save_session(self) -> None:
         self.device.doc["session"] = {"token": self.token, "user_id": self.user_id,
@@ -421,19 +430,23 @@ class AppChannel:
             result_code = str(srv.get("resultCode") or "")
             text = str(srv.get("resultMessage") or (plain or {}).get("message") or "")
             # 配置向导要把"密码错了""被限流""新设备验证"分开报，光一个 False 会把用户
-            # 引去改密码，而真正的原因可能是流控，或者需要一次短信验证
+            # 引去改密码，而真正的原因可能是流控，或者需要一次短信验证。
+            # 顺序有讲究：4006（新设备安全验证）和 RKxxx（交互式校验）必须排在密码那支
+            # 前面——它们的原话里常带"账号/安全"字样，按"含账号就当成密码错"判会把一条
+            # 走不通（或该去填验证码）的路说成"再试一次密码"。
             if plain is None:
                 self.last_error = "cannot_connect"
-            elif result_code == DEVICE_VERIFICATION_CODE or "新设备" in text or "安全验证" in text:
+            elif result_code == DEVICE_VERIFICATION_CODE or "新设备" in text:
+                # 这一步是能救的：发一条 logindevice 短信拿 codeKey，再带验证码重登
                 self.last_error = "device_verification"
                 self.verification_required = True
-            elif result_code in INTERACTIVE_CHALLENGE_CODES or "RK008" in text:
-                self.last_error = "interactive_challenge"
+            elif code in CAPTCHA_CODES:
+                # 服务端在这一步要一次腾讯验证（滑块/点选）。它的原话是"网络连接超时,请重试"，
+                # 那句是站点对这类码的统一兜底文案，不是网络故障：请求到了、信封也解得开。
+                # 归类成"要验证码"而不是"稍后再试"，因为重试不会让它变成不要。
+                self.last_error = "captcha_required"
             elif code in RATE_LIMIT_CODES or "RK001" in text or "日额度" in text:
                 self.last_error = "rate_limited"
-            elif code == "RK007" or "RK007" in text or "超时" in text:
-                # RK007=网络连接超时：服务端瞬时抖动/短时频控，等一会重试即可，不是密码问题
-                self.last_error = "server_busy"
             elif "密码" in text or "账号" in text or result_code in ("0100", "0101"):
                 self.last_error = "invalid_auth"
             else:
@@ -544,11 +557,49 @@ class AppChannel:
             LOGGER.warning("App 通道 %s 响应解不开：%s %s", path, type(exc).__name__, str(exc)[:80])
             return None
 
-    async def _authed(self, path: str, payload: Any):
+    @staticmethod
+    def _session_rejected(plain: Any) -> bool:
+        """服务端回的是"这份会话不算数了"吗？"""
+        if not isinstance(plain, dict):
+            return False
+        code = str(plain.get("code") or "")
+        srv = ((plain.get("data") or {}).get("srvrt") or {})
+        text = str(srv.get("resultMessage") or plain.get("message") or "")
+        return code in SESSION_DEAD_CODES or "登录状态已失效" in text
+
+    async def _async_relogin_and_retry(self, path: str, payload: Any):
+        """会话被服务端**提前**作废时的自救：清掉本地那份、重登一次、重试原请求。
+
+        为什么必须自己清：`async_load_session` 只能看本地存的 expires_at，而它在
+        上游那边第 3 天就作废过（hass-state-grid issue #2）。不清的话每轮都带着死令牌
+        去碰、每轮都"没取到日电量"，要僵到 expires_at 前一天才会重登。
+        重登撞上人工验证就**停手**：上游那个用户就是被"失败即重登"反复敲进 RK008 的。
+        """
+        self.device.doc.pop("session", None)
+        await self.device.async_save()
+        self.token = self.user_id = self.province = ""
+        self.accounts = []
+        self.raw_accounts = []
+        if not await self.async_login(force=True):
+            if self.last_error in ("device_verification", "captcha_required"):
+                LOGGER.warning("会话被服务端作废，但重新登录要求人工验证（%s）——本轮放弃，"
+                               "别反复重试，越试越容易被延长拦截", self.last_error)
+            return None
+        LOGGER.warning("会话被提前作废：已重新登录，继续本轮取数")
         model, release = self.device.identity
         token, token_time = await self.device.async_device_token()
         return await self._post(path, payload, token=token, token_time=token_time,
                                 model=model, release=release, session_token=self.token)
+
+    async def _authed(self, path: str, payload: Any):
+        model, release = self.device.identity
+        token, token_time = await self.device.async_device_token()
+        plain = await self._post(path, payload, token=token, token_time=token_time,
+                                 model=model, release=release, session_token=self.token)
+        if self._session_rejected(plain):
+            retried = await self._async_relogin_and_retry(path, payload)
+            return retried if retried is not None else plain
+        return plain
 
     async def async_daily(self, a: AppAccount, start: date, end: date) -> dict[str, Any] | None:
         return await self._authed(DAILY_PATH, _daily_payload(a, start, end))

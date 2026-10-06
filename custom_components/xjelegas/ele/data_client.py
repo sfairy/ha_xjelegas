@@ -473,7 +473,10 @@ class StateGridDataClient:
                           'pushed_at': (bundle or {}).get('pushed_at'), 'skipped': skipped[:8]}
         # 数据的"新鲜时间"就是推送时间：timestamp 不跟着走的话 12 小时闸门一直是开的
         self.timestamp = int(time.time() * 1000)
-        LOGGER.warning('推送入仓 %d 份（%d 个键，跳过 %d）', n, len(cache), len(skipped))
+        # 供数来源必须写进行情：App 通道和（可选）sidecar 走的是同一个入口，
+        # 若把这句固定写成某一方，日志里就分不清到底是谁在供数。
+        LOGGER.warning('%s 入仓 %d 份（%d 个键，跳过 %d）',
+                       (bundle or {}).get('source') or '未标注来源的推送', n, len(cache), len(skipped))
         return n
 
     def handle_request_result_message(self, api, result, printResult=True):
