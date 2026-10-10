@@ -49,6 +49,8 @@ from .const import (
 from .ele.const import (
     CONF_IS_PREPAID, CONF_PRICE, CONF_REFRESH_INTERVAL, CONF_NEW_PASSWORD,
     MIN_REFRESH_INTERVAL, MAX_REFRESH_INTERVAL,
+    CONF_WEB_CHANNEL, CONF_WEB_PRIORITY, CONF_EMAIL_ACCOUNT,
+    DEFAULT_WEB_CHANNEL, DEFAULT_WEB_PRIORITY,
 )
 
 # 模块级日志器，用于记录配置流程中的错误与调试信息
@@ -556,8 +558,9 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             errors: dict[str, str] = {}
             new_data = dict(self._config_entry.options or {})
-            # 清理旧版本遗留的验证码/LLM/邮箱配置键
-            for legacy in ("ark_api_key", "ark_base_url", "ark_model", "email_account", "email"):
+            # 清理旧版本遗留的验证码/LLM 配置键。
+            # 注意：email_account 不再清除——它已重新启用为网页通道的备用登录标识。
+            for legacy in ("ark_api_key", "ark_base_url", "ark_model", "email"):
                 new_data.pop(legacy, None)
 
             refresh_interval = user_input.get(CONF_REFRESH_INTERVAL)
@@ -571,6 +574,19 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
                     )
             elif CONF_REFRESH_INTERVAL in current:
                 new_data[CONF_REFRESH_INTERVAL] = current[CONF_REFRESH_INTERVAL]
+
+            # 这几项要在改密码那一段**之前**收：那条路成功时会带着 new_data 直接 return，
+            # 放它后面就等于"改了密码顺手把开关和备用标识丢掉"
+            if CONF_WEB_CHANNEL in user_input:
+                new_data[CONF_WEB_CHANNEL] = bool(user_input.get(CONF_WEB_CHANNEL))
+            if CONF_WEB_PRIORITY in user_input:
+                new_data[CONF_WEB_PRIORITY] = bool(user_input.get(CONF_WEB_PRIORITY))
+            if CONF_EMAIL_ACCOUNT in user_input:
+                new_email = str(user_input.get(CONF_EMAIL_ACCOUNT) or "").strip()
+                if new_email and "@" not in new_email:
+                    errors[CONF_EMAIL_ACCOUNT] = "invalid_email"
+                else:
+                    new_data[CONF_EMAIL_ACCOUNT] = new_email
 
             # 新密码：留空=不修改；填值=走 App 通道验证一次，成功后写入 Store
             new_password_raw = user_input.get(CONF_NEW_PASSWORD) or ""
@@ -607,6 +623,17 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
             if self.data_client:
                 if CONF_REFRESH_INTERVAL in new_data:
                     self.data_client.refresh_interval = int(new_data[CONF_REFRESH_INTERVAL])
+                if CONF_WEB_CHANNEL in new_data:
+                    # 关掉时把已挂的会话一起摘掉，别让 _fetch 继续用旧实例发请求
+                    self.data_client.web_channel = bool(new_data[CONF_WEB_CHANNEL])
+                    if not self.data_client.web_channel:
+                        self.data_client.web = None
+                if CONF_WEB_PRIORITY in new_data:
+                    self.data_client.web_priority = bool(new_data[CONF_WEB_PRIORITY])
+                if CONF_EMAIL_ACCOUNT in new_data:
+                    # 换了备用标识就得重挂一次：实例里记的还是旧的那把
+                    self.data_client.email_account = str(new_data[CONF_EMAIL_ACCOUNT] or "")
+                    self.data_client.web = None
                 await self.data_client.save_data()
             return self.async_create_entry(title="", data=new_data)
 
@@ -625,11 +652,34 @@ class EleOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_REFRESH_INTERVAL,
             str(getattr(self.data_client, "refresh_interval", MIN_REFRESH_INTERVAL)),
         )
+        web_on = bool(current.get(
+            CONF_WEB_CHANNEL, getattr(self.data_client, "web_channel", DEFAULT_WEB_CHANNEL)))
+        prio_on = bool(current.get(
+            CONF_WEB_PRIORITY, getattr(self.data_client, "web_priority", DEFAULT_WEB_PRIORITY)))
+        email = str(current.get(
+            CONF_EMAIL_ACCOUNT, getattr(self.data_client, "email_account", "")) or "")
 
         data_schema = vol.Schema({
             vol.Optional(
                 CONF_REFRESH_INTERVAL,
                 default=refresh_val,
+            ): _text_input(),
+            vol.Optional(
+                CONF_WEB_CHANNEL,
+                default=web_on,
+                description="网页通道（关掉则完全不发网页请求，只吃 App 与推送）",
+            ): selector.BooleanSelector(selector.BooleanSelectorConfig()),
+            vol.Optional(
+                CONF_WEB_PRIORITY,
+                default=prio_on,
+                description="网页优先取数（每格先问网页，App 灌进来的那份兜底）；"
+                            "关掉则回到 App 优先、网页只补没货的格子",
+            ): selector.BooleanSelector(selector.BooleanSelectorConfig()),
+            vol.Optional(
+                CONF_EMAIL_ACCOUNT,
+                default=email,
+                description="备用登录标识（选填，一般填登记在国网的邮箱）：手机号那把被硬拒时，"
+                            "网页登录改用这一把，不用你动手",
             ): _text_input(),
             vol.Optional(CONF_NEW_PASSWORD, default=""): _text_input(selector.TextSelectorType.PASSWORD),
         })

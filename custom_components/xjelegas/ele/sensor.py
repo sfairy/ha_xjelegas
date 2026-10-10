@@ -50,6 +50,22 @@ SENSOR_TYPES = [
         "description": "当前账户的剩余金额（含预存电费）。"
     },
     {
+        "key": "esti_amt",
+        "name": "应缴金额",
+        "native_unit_of_measurement": UNIT_YUAN,
+        "device_class": SensorDeviceClass.MONETARY,
+        "state_class": SensorStateClass.TOTAL,
+        "description": "本期应缴金额（账单制账号余额恒为 0 时，用这个判断这月该不该去缴）。"
+    },
+    {
+        "key": "history_owe",
+        "name": "历史欠费",
+        "native_unit_of_measurement": UNIT_YUAN,
+        "device_class": SensorDeviceClass.MONETARY,
+        "state_class": SensorStateClass.TOTAL,
+        "description": "历史欠费金额。"
+    },
+    {
         "key": "year_ele_num",
         "name": "年度累计用电",
         "native_unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,

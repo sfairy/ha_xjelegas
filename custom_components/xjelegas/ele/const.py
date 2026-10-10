@@ -14,7 +14,7 @@ DOMAIN = "xjelegas"  # 集成域，与燃气模块共用
 PACKAGE_NAME = "custom_components.xjelegas"  # 包路径，用于日志与存储
 
 # ---------- 版本信息 ----------
-VERSION = "2.0.1"  # 电力模块版本（与集成 manifest 同步）
+VERSION = "2.0.2"  # 电力模块版本（与集成 manifest 同步）
 VERSION_STORAGE = 1  # 存储结构版本，用于数据迁移兼容
 
 # ---------- 配置项键名 ----------
@@ -43,6 +43,20 @@ MAX_REFRESH_INTERVAL = 48   # 最大刷新间隔（小时）
 DEFAULT_REFRESH_INTERVAL = 12
 CONF_REFRESH_INTERVAL = "refresh_interval"
 CONF_NEW_PASSWORD = "new_password"  # 选项流改密：留空不修改；填写后触发登录验证
+
+# ---------- 网页通道（对齐 state_grid 0.9.10 web_api.py） ----------
+# App 通道取不到的格子（如 c04/f03 抄表读数）由这条纯 HTTP 网页通道补齐。
+# 三个开关都住在条目选项里，不落 ele store：
+#   CONF_WEB_CHANNEL：总开关，关掉完全不发网页请求；
+#   CONF_WEB_PRIORITY：True=每格先问网页、App 灌进来的载荷兜底；False=App 优先、网页只补没货的格子；
+#   CONF_EMAIL_ACCOUNT：备用登录标识（登记邮箱），主标识吃到 RK001 时由 web_api 顶上。
+CONF_WEB_CHANNEL = "web_channel"
+CONF_WEB_PRIORITY = "web_priority"
+CONF_EMAIL_ACCOUNT = "email_account"
+# 默认与 state_grid 0.9.10 一致：网页优先。每格先问网页（真 HTTP），App 通道灌进来的
+# 那份兜底；用户在「配置」里可改回 App 优先或整个关掉网页通道。
+DEFAULT_WEB_CHANNEL = True
+DEFAULT_WEB_PRIORITY = True
 
 # ---------- 数据保留周期（与燃气 storage 一致） ----------
 RETENTION_DAYS = 366   # 日数据保留天数（约 1 年）

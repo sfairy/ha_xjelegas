@@ -65,7 +65,10 @@
         "title": "Xinjiang Electricity - Options",
         "data": {
           "refresh_interval": "Refresh interval (hours, 12-48)",
-          "new_password": "New password (leave blank to keep; triggers App login verification)"
+          "new_password": "New password (leave blank to keep; triggers App login verification)",
+          "web_channel": "Web channel",
+          "web_priority": "Prefer the web channel",
+          "email_account": "Alternate sign-in id (email, optional)"
         }
       },
       "debug": {
@@ -98,6 +101,7 @@
       "captcha_required": "State Grid asked for a security check at this step (a slider or click captcha; the type code is RK007/RK008/RK1003). That check has to be completed by Tencent's web widget, which the App interface cannot do here, so retrying won't make it go away. This is not a wrong password and not your network - the \"network timeout\" wording is the site's generic text for these codes",
       "invalid_refresh_interval": "Refresh interval must be an integer between 12 and 48 (hours)",
       "rk001_rate_limit": "State Grid rate limit (RK001) hit. Please retry later",
+      "invalid_email": "That doesn't look like an email address; leave it empty to disable the alternate id",
       "no_account": "No running integration instance or account found. Please retry or restart Home Assistant"
     }
   }

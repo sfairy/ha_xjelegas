@@ -21,3 +21,4 @@ debug_info.py
 
 # 调试脚本落盘的合成设备身份（含设备令牌，切勿入库）
 .ele_debug_device.json
+版本更新/

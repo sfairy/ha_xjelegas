@@ -298,6 +298,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             else:
                 config[CONF_IS_PREPAID] = False
 
+        # 网页通道三项（对齐 state_grid 0.9.10）：住在条目选项里，不落 ele store。
+        # 默认与 0.9.10 一致：网页优先，每格先问网页、App 灌进来的那份兜底；
+        # 用户可在「配置」里改回 App 优先，或把网页通道整个关掉。
+        from .ele.const import (
+            CONF_WEB_CHANNEL, CONF_WEB_PRIORITY, CONF_EMAIL_ACCOUNT,
+            DEFAULT_WEB_CHANNEL, DEFAULT_WEB_PRIORITY,
+        )
+        config = config or {}
+        config[CONF_WEB_CHANNEL] = bool(options.get(CONF_WEB_CHANNEL, DEFAULT_WEB_CHANNEL))
+        config[CONF_WEB_PRIORITY] = bool(options.get(CONF_WEB_PRIORITY, DEFAULT_WEB_PRIORITY))
+        config[CONF_EMAIL_ACCOUNT] = str(options.get(CONF_EMAIL_ACCOUNT) or "")
+        _LOGGER.warning(
+            "ele 供数顺序：%s；网页通道=%s；备用登录标识%s",
+            "网页优先" if config[CONF_WEB_PRIORITY] else "App 优先",
+            "开" if config[CONF_WEB_CHANNEL] else "关",
+            "已配" if config[CONF_EMAIL_ACCOUNT] else "未配",
+        )
+
         # 旧版 entry 可能将密码保存在 data/options，合并到 storage 供自动重登
         if config is not None:
             if not config.get("password"):

@@ -1,12 +1,18 @@
 """
 新疆电力 (ele) 数据客户端（对齐 state_grid/data_client.py）。
 
-数据只从「推送缓存」来，本模块不再发任何网络请求：
-  * ele 自己的 App 通道（app_supply 每小时把国家电网 App 接口面的返回翻译成网页形状灌进来）；
-  * （可选）sidecar 浏览器容器 POST 给集成 webhook 的那份真实网页响应。
+两个供数来源，顺序由 `web_priority` 定（默认与 state_grid 0.9.10 一致：网页优先）：
+  * 网页通道（`web_api.WebChannel`，移植自 state_grid 0.9.10）——纯 HTTP、不发浏览器、
+    不过验证码；网页优先时每格先问它，补的正是 App 给不了的那部分
+    （例如 c04/f03 的抄表读数：App 通道根本不供这个形状）；
+  * App 通道（`app_supply` 每 30 分钟把国网 App 接口面的返回翻译成网页形状灌进
+    `push_cache`）——网页那边供不上时兜底，命中即用。
+
+关掉 `web_channel` 选项或网页通道挂不上时，行为和以前一样：只吃推送缓存，缺数按 no_cache 处理。
 
 取数与解析逻辑沿用 ele/api.py 的新疆电力版本（余额正负号、年度累计口径、日/月账单保留），
-只把「网络与登录」换成「推送缓存命中」。App 登录见 ele/app_api.py，加密原语见 ele/utils/crypt.py。
+只把「网络与登录」换成「推送缓存命中 + 网页补齐」。App 登录见 ele/app_api.py，
+网页登录见 ele/web_api.py，加密原语见 ele/utils/crypt.py。
 """
 
 import asyncio
@@ -26,7 +32,13 @@ from .const import (
     DEFAULT_REFRESH_INTERVAL,
     MIN_REFRESH_INTERVAL,
     MAX_REFRESH_INTERVAL,
+    CONF_WEB_CHANNEL,
+    CONF_WEB_PRIORITY,
+    CONF_EMAIL_ACCOUNT,
+    DEFAULT_WEB_CHANNEL,
+    DEFAULT_WEB_PRIORITY,
 )
+from . import web_api
 from .utils.logger import LOGGER
 from .utils.store import async_save_to_store
 
@@ -392,6 +404,17 @@ class StateGridDataClient:
         self.push_meta = None
         self.push_pending = False
 
+        # ── 网页通道：App 取不到的格子由它补齐（见 web_api.py） ──
+        # 三态：None=还没试过；False=试过但不可用（别在每个空格子上都去登录一次）；其余是可用实例
+        self.web = None
+        self.web_channel = DEFAULT_WEB_CHANNEL
+        # True=每格先问网页、App 灌进来的载荷兜底；False=App 优先、网页只补没货的格子
+        self.web_priority = DEFAULT_WEB_PRIORITY
+        # 备用登录标识（登记邮箱）：主标识吃到 RK001 时由 web_api 顶上
+        self.email_account = ""
+        # 本轮真的供上了几格：refresh_data 结尾靠它决定要不要把 timestamp 前移
+        self.fetch_ok = 0
+
         if config is not None:
             try:
                 self.powerUserList = config.get('powerUserList')
@@ -406,6 +429,10 @@ class StateGridDataClient:
                 )
                 self.price = config.get(CONF_PRICE, config.get('price', 0.475))
                 self.is_prepaid = config.get(CONF_IS_PREPAID)
+                # 网页通道开关住在条目选项里（__init__.py 会把它并进 config）
+                self.web_channel = bool(config.get(CONF_WEB_CHANNEL, DEFAULT_WEB_CHANNEL))
+                self.web_priority = bool(config.get(CONF_WEB_PRIORITY, DEFAULT_WEB_PRIORITY))
+                self.email_account = str(config.get(CONF_EMAIL_ACCOUNT) or "")
                 saved_ts = config.get('timestamp')
                 if saved_ts and isinstance(saved_ts, (int, float)) and saved_ts > 0:
                     self.timestamp = int(saved_ts)
@@ -527,13 +554,47 @@ class StateGridDataClient:
         """兼容 refresh_data 里的旧闸门：推送缓存模式下不再有登录退避，恒允许。"""
         return True
 
-    async def _fetch(self, api, data, header=None):
-        """只从推送缓存取载荷，不再发任何网络请求。
+    async def _fetch_web(self, api, data):
+        """问一次网页通道。挂不上/供不上都回 None（调用方按缺数处理），别在这里编造成功。
 
-        命中即用、一次一份：同一 (接口, 户号) 可以挂多份，由 _push_covers 按期间和覆盖区间挑。
-        不命中也不自己去登录：App 那条路由 app_supply 每小时灌缓存，网页那条路只能由真浏览器抓。
-        这里不能碰 self.timestamp —— 它代表"数据新鲜度"，miss 也算新鲜的话 12 小时闸门就废了。
+        移植自 state_grid 0.9.10 data_client::__fetch_web。
         """
+        # None=还没试过；False=试过但没挂上——两种都可以再试，但 web_api.async_attach 自带闸门
+        # （连续失败越多隔得越久），所以每格都走到这里也不会变成逐格敲登录。
+        try:
+            if self.web is None or self.web is False:
+                self.web = await web_api.async_attach(self) or False
+            if self.web is None or self.web is False:
+                return None
+            if self.web.unavailable():
+                return None   # 本轮已锁/当天已冷却：零请求直接回缓存
+            self.userInfo = self.web.user_info or self.userInfo
+            self.token = self.web.token
+            resp = await self.web.async_call(api, data)
+        except Exception as exc:
+            LOGGER.warning('网页通道取数异常(%s)：%s %s', api, type(exc).__name__, str(exc)[:120])
+            return None
+        if resp:
+            LOGGER.warning('网页通道取到 %s', api.split('/member/')[-1])
+            self.fetch_ok += 1
+            return resp
+        return None
+
+    async def _fetch(self, api, data, header=None):
+        """先按 `web_priority` 决定供数顺序，再从推送缓存取载荷。
+
+        * 网页优先（web_priority=True，默认，与 state_grid 0.9.10 一致）：每格先问网页，
+          App 灌进来的载荷兜底；
+        * App 优先（web_priority=False）：缓存命中即用，网页只补缓存没货的格子。
+
+        两条路的载荷与响应形状同一套（解析层不分叉），换顺序不改数值口径。
+        这里不能碰 self.timestamp —— 它代表"数据新鲜度"，miss 也算新鲜的话 12 小时闸门就废了；
+        timestamp 的前移统一放在 refresh_data 结尾按 fetch_ok 处理。
+        """
+        if self.web_channel and self.web_priority:
+            resp = await self._fetch_web(api, data)
+            if resp is not None:
+                return resp
         if self.push_cache:
             key = _push_hit_key(api, data)
             entries = self.push_cache.get(key) or []
@@ -543,12 +604,18 @@ class StateGridDataClient:
                     if not entries:
                         self.push_cache.pop(key, None)
                     LOGGER.warning('命中推送缓存: %s 户号=%s', api, key[1])
+                    self.fetch_ok += 1
                     return payload[0]
             LOGGER.warning('推送缓存未命中: %s 户号=%s 原因=%s 现有=%s', api, key[1],
                            '覆盖不足' if entries else '无此键',
                            sorted('%s|%s' % ('/'.join(str(k[0]).split('/')[-2:]), k[1])
                                   for k in self.push_cache))
-        return {'code': 'no_cache', 'message': '推送缓存里没有这格的载荷（本轮不走网络）'}
+        # App 优先那一路：缓存没货时才允许走网页（载荷与响应形状同一套，解析层不分叉）
+        if self.web_channel and not self.web_priority:
+            resp = await self._fetch_web(api, data)
+            if resp is not None:
+                return resp
+        return {'code': 'no_cache', 'message': '这一格网页没供上、缓存里也没有载荷'}
 
     async def _get_door_number(self):
         """
@@ -988,6 +1055,8 @@ class StateGridDataClient:
         # 推送是一次性的触发器：这一轮用掉就熄灭。push_cache 里可能有本轮用不到的形状，
         # 拿它非空当强制刷新条件的话，每轮轮询都会被迫重跑一遍整段解析。
         self.push_pending = False
+        # 本轮从 App 缓存/网页通道真的供上了几格；结尾靠它决定要不要把 timestamp 前移
+        self.fetch_ok = 0
         # 已知需要重登且仍处于失败退避期：直接跳过，避免每轮轮询都发起一次探测请求。
         if self.need_login and not force_refresh and not self._login_allowed():
             LOGGER.info("处于登录退避期，跳过本次数据刷新")
@@ -1020,6 +1089,12 @@ class StateGridDataClient:
                         self.timestamp = _orig_ts
                         return
 
+            # 本轮供上过格子就把"数据新鲜度"推到当下：网页优先的一轮可以一次都不碰推送缓存，
+            # 而推 timestamp 的原本只有 ingest_push —— 缺了它，12 小时闸门会一直是开的，
+            # 每 5 分钟的轮询都会重跑整段解析。一格都没供上时仍然不推（让下一轮接着试），
+            # 异常那条路照旧还原 _orig_ts。
+            if self.fetch_ok:
+                self.timestamp = int(time.time() * 1000)
             await self.save_data()
         except Exception:
             LOGGER.exception("refresh_data 异常，已还原 timestamp")
@@ -1245,6 +1320,15 @@ class StateGridDataClient:
                         pass
 
         door_account['balance'] = balance_val
+        # 应缴与历史欠费单独落实体：账单制账号（如上海）余额恒为 0，
+        # 只能靠这两个键判断"这月该不该去缴"。数据就在同一份余额响应里，不用多发一次请求。
+        # 必须"键在才写"：缺字段时写 0 会被读成"已缴清"，而他正是拿这个数做语音播报的。
+        balance_data = door_account.get('account_balance') or {}
+        if isinstance(balance_data, dict):
+            if 'estiAmt' in balance_data:
+                door_account['esti_amt'] = catchFloat(balance_data, 'estiAmt')
+            if 'historyOwe' in balance_data:
+                door_account['history_owe'] = catchFloat(balance_data, 'historyOwe')
         door_account['refresh_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     def get_door_account_list(self):
