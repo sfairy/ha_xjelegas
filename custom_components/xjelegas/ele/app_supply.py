@@ -83,8 +83,9 @@ def _balance_response(app_data: dict[str, Any]) -> dict[str, Any]:
 
     余额就是 `sumMoney`：实测网页行 `sumMoney=61.0 → balance=61.0`、第二块表
     `sumMoney=-14.63 → balance=-14.63`（它的 `prepayBal` 反而是 0）。
-    曾经按"prepayBal 才是余额"写过一次 `accountBalance` 覆盖，那是拿昨天的数值做的
-    巧合比对，会把余额算成 0，已撤。
+    曾经按"prepayBal 才是余额"写过一次无条件 `accountBalance` 覆盖，那是拿昨天的数值做的
+    巧合比对，会把余额算成 0，已撤。现在的规则对齐 state_grid 0.9.12：`accountBalance`
+    只在**非 0** 时覆盖，预付费 + `isMent=='1'` 那支单独用它（那里的 sumMoney 是上期账单）。
     唯一不能省的是 `consType`：解析器直接下标读它，缺了会抛异常把整轮刷新掐掉。
     """
     rows = [r for r in (app_data.get("list") or []) if isinstance(r, dict)]

@@ -51,11 +51,11 @@ SENSOR_TYPES = [
     },
     {
         "key": "esti_amt",
-        "name": "应缴金额",
+        "name": "本月电费",
         "native_unit_of_measurement": UNIT_YUAN,
         "device_class": SensorDeviceClass.MONETARY,
         "state_class": SensorStateClass.TOTAL,
-        "description": "本期应缴金额（账单制账号余额恒为 0 时，用这个判断这月该不该去缴）。"
+        "description": "本月应缴电费（账单制账号余额恒为 0 时，用这个判断这月该不该去缴）。"
     },
     {
         "key": "history_owe",
@@ -298,17 +298,22 @@ class StateGridSensor(CoordinatorEntity[StateGridCoordinator], SensorEntity):
         
         sensor_value = door_data.get(self.sensor_type["key"])
         
-        # 为余额传感器提供默认值保护，并从 account_balance 尝试提取
+        # 余额传感器：解析层算出的 balance 就是最终答案，0 也是有效值
+        # （账单制已缴清 / 预付费余额为 0）。不能再从 account_balance 里挑一个非 0 字段顶上，
+        # 否则「账户余额」会被读成上期账单金额（state_grid #16）。
+        # 只有解析层完全没产出（旧缓存里没有 balance 键）时才走原始字段兜底。
         if self.sensor_type["key"] == "balance":
             if sensor_value is not None:
                 try:
-                    float_value = float(sensor_value)
-                    if float_value != 0:
-                        return round(float_value, 2)
+                    return round(float(sensor_value), 2)
                 except (ValueError, TypeError):
                     pass
             account_balance = door_data.get("account_balance") or {}
             if isinstance(account_balance, dict):
+                # 标准余额响应缺 balance 说明解析失败：宁可返回 0，也别拿 sumMoney 等
+                # 别的字段凑一个数出来（那正是 #16 把上期账单当余额的来源）。
+                if "sumMoney" in account_balance or "accountBalance" in account_balance:
+                    return 0.0
                 for key in ("accountBalance", "prestoreBalance", "sumMoney", "balance", "sumTotalAmt", "totalAmount"):
                     balance_value = account_balance.get(key)
                     if balance_value is not None:

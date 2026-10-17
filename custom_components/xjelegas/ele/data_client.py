@@ -1286,41 +1286,51 @@ class StateGridDataClient:
             is_ment = str(balance_data.get('isMent', '')).upper()
             is_postpaid = (const_type in ('1', '01'))
             is_prepaid = (const_type in ('0', '00'))
-            is_special = not (not is_prepaid or is_ment != '1')
+            is_special = is_prepaid and is_ment == '1'
+            account_balance_val = catchFloat(balance_data, 'accountBalance')
             if is_postpaid:
                 balance_val = sum_money
             elif is_prepaid and not is_special:
                 balance_val = -abs(sum_money)
             elif is_prepaid and is_special:
-                balance_val = sum_money
+                # 账单制已缴清：sumMoney 装的是上期账单金额，不是余额。拿它当余额会让
+                # 「账户余额」和「上个月电费」读成同一个数（state_grid #16 的 49.0、
+                # #14 缴费后的 +200.2），这里改回真实的那一格（对齐 state_grid 0.9.12）。
+                balance_val = account_balance_val
             elif sum_money != 0:
                 balance_val = sum_money
-            account_balance_val = catchFloat(balance_data, 'accountBalance')
+            # accountBalance 只在**非 0** 时才覆盖：后付费账号这个键存在但恒为 0，
+            # 一旦无条件覆盖，预付费那支「欠费显示成负数」会被抹成 0，用户再也判断不了
+            # 缴没缴（0.9.10 的「有键就覆盖」修好 #4 却弄坏 #14；0.9.12 回到 g!=0）。
             if account_balance_val != 0:
                 balance_val = account_balance_val
-            fallback_keys = [
-                'sumTotalAmt', 'totalAmount', 'balance', 'prestoreBalance',
-                'accountBalance', 'balanceAmt', 'remainAmt', 'storeBalance',
-                'totalAmt', 'amt', 'sumMoney', 'oweAmount', '欠费', '余额'
-            ]
-            for fallback_key in fallback_keys:
-                if balance_val != 0:
-                    break
-                balance_val = catchFloat(balance_data, fallback_key)
-            if balance_val == 0:
-                for key, value in balance_data.items():
-                    if value is None:
-                        continue
-                    try:
-                        float_value = float(value)
-                        if float_value > 0 and float_value < 1000000:
-                            balance_val = float_value
-                            break
-                    except (ValueError, TypeError):
-                        pass
+            # 旧版新疆解析器留下的多字段兜底：只在响应**没有**标准余额字段时启用。
+            # 标准响应里的 0 本身就是答案（账单制已缴清、预付费余额为 0），再用 sumMoney
+            # 顶上就会把「已缴清」读成「上期账单金额」——正是 state_grid #16 的复现路径。
+            if 'sumMoney' not in balance_data and 'accountBalance' not in balance_data:
+                fallback_keys = [
+                    'sumTotalAmt', 'totalAmount', 'balance', 'prestoreBalance',
+                    'accountBalance', 'balanceAmt', 'remainAmt', 'storeBalance',
+                    'totalAmt', 'amt', 'sumMoney', 'oweAmount', '欠费', '余额'
+                ]
+                for fallback_key in fallback_keys:
+                    if balance_val != 0:
+                        break
+                    balance_val = catchFloat(balance_data, fallback_key)
+                if balance_val == 0:
+                    for key, value in balance_data.items():
+                        if value is None:
+                            continue
+                        try:
+                            float_value = float(value)
+                            if float_value > 0 and float_value < 1000000:
+                                balance_val = float_value
+                                break
+                        except (ValueError, TypeError):
+                            pass
 
         door_account['balance'] = balance_val
-        # 应缴与历史欠费单独落实体：账单制账号（如上海）余额恒为 0，
+        # 本月电费与历史欠费单独落实体：账单制账号（如上海）余额恒为 0，
         # 只能靠这两个键判断"这月该不该去缴"。数据就在同一份余额响应里，不用多发一次请求。
         # 必须"键在才写"：缺字段时写 0 会被读成"已缴清"，而他正是拿这个数做语音播报的。
         balance_data = door_account.get('account_balance') or {}
